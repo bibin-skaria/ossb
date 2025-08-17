@@ -1,6 +1,6 @@
 # OSSB — Open Source Slim Builder
 
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.16883393.svg)](https://doi.org/10.5281/zenodo.16883393)  
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.16883393.svg)](https://doi.org/10.5281/zenodo.16888963)  
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
 A **headless, rootless, multi‑architecture** container image builder powered by **Rootless BuildKit** (`buildkitd` + `buildctl`). OSSB provides a simple, Kaniko/Buildx‑like CLI and an optional Kubernetes Job to build & push OCI images with great caching — and leaves **no long‑running daemon** behind.
