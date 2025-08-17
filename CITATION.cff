@@ -1,0 +1,23 @@
+cff-version: 1.2.0
+message: If you use this software, please cite it.
+title: OSSB — Open Source Slim Builder
+version: v1.33.0
+date-released: 2025-08-15    
+authors:
+  - family-names: Skaria
+    given-names: Bibin
+    orcid: "https://orcid.org/0000-0004-8976-8186"
+repository-code: "https://github.com/bibin-skaria/ossb"
+license: Apache-2.0
+keywords:
+  - BuildKit
+  - Rootless
+  - Multi-arch
+  - Dockerfile
+  - OCI
+  - Kubernetes
+  - CI/CD
+  - Headless
+abstract: >
+  Headless, rootless, multi-architecture container image builder powered by Rootless BuildKit (buildkitd + buildctl). Provides a simple, Kaniko/Buildx-like CLI and an optional Kubernetes Job to build and push OCI images, with registry cache support and no long-running daemons.
+doi: 10.5281/zenodo.16888963
