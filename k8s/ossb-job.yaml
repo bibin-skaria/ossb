@@ -1,0 +1,55 @@
+apiVersion: v1
+kind: Namespace
+metadata: { name: ci }
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: { name: ossb, namespace: ci }
+---
+apiVersion: batch/v1
+kind: Job
+metadata: { name: ossb-build, namespace: ci }
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      serviceAccountName: ossb
+      restartPolicy: Never
+      securityContext: { runAsUser: 1000, runAsGroup: 1000, fsGroup: 1000 }
+      containers:
+      - name: buildkitd
+        image: moby/buildkit:rootless
+        args: ["--addr","tcp://0.0.0.0:1234","--oci-worker-no-process-sandbox"]
+        ports: [{containerPort: 1234}]
+        securityContext: { allowPrivilegeEscalation: false, seccompProfile: { type: RuntimeDefault } }
+      - name: client
+        image: alpine:3.20
+        command: ["/bin/sh","-lc"]
+        args:
+          - |
+            set -e
+            apk add --no-cache git curl ca-certificates bash
+            VER=v0.13.1
+            curl -L -o /usr/local/bin/buildctl https://github.com/moby/buildkit/releases/download/${VER}/buildctl-linux-amd64
+            chmod +x /usr/local/bin/buildctl
+
+            git clone --depth=1 "$GIT_URL" /src
+            cd /src
+            git fetch --depth=1 origin "$REF" || true
+            git checkout -q "$REF" || true
+
+            buildctl --addr tcp://localhost:1234 build               --frontend dockerfile.v0               --local context=.               --local dockerfile=.               --opt filename="$DOCKERFILE_PATH"               --opt platform="$PLATFORMS"               --output type=image,name="$TAG",push=true               --export-cache type=registry,ref="$REGISTRY_CACHE",mode=max               --import-cache type=registry,ref="$REGISTRY_CACHE"
+        env:
+          - { name: GIT_URL, value: "https://github.com/you/repo.git" }
+          - { name: REF, value: "main" }
+          - { name: TAG, value: "ghcr.io/you/app:1.0" }
+          - { name: PLATFORMS, value: "linux/amd64,linux/arm64" }
+          - { name: DOCKERFILE_PATH, value: "Dockerfile" }
+          - { name: REGISTRY_CACHE, value: "ghcr.io/you/app:buildcache" }
+        volumeMounts:
+          - { name: docker-config, mountPath: /root/.docker }
+        securityContext: { allowPrivilegeEscalation: false, seccompProfile: { type: RuntimeDefault } }
+      volumes:
+        - name: docker-config
+          secret:
+            secretName: regcred

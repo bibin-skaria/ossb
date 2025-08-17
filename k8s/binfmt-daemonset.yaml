@@ -1,0 +1,21 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: qemu-binfmt
+  namespace: kube-system
+  labels: { app: qemu-binfmt }
+spec:
+  selector:
+    matchLabels: { app: qemu-binfmt }
+  template:
+    metadata:
+      labels: { app: qemu-binfmt }
+    spec:
+      hostPID: true
+      containers:
+      - name: installer
+        image: tonistiigi/binfmt:qemu-v8
+        securityContext: { privileged: true }
+        args: ["--install","all"]
+      tolerations:
+      - operator: "Exists"

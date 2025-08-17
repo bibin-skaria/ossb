@@ -1,0 +1,51 @@
+<svg xmlns='http://www.w3.org/2000/svg' width='940' height='520' viewBox='0 0 940 520' font-family='Inter,Segoe UI,Arial' >
+  <style>
+    .box{fill:#fff;stroke:#94a3b8;stroke-width:1.2}
+    .title{font-weight:700;fill:#0f172a}
+    .text{fill:#334155;font-size:14px}
+    .muted{fill:#64748b;font-size:12px}
+    .arrow{stroke:#64748b;stroke-width:1.6;marker-end:url(#a)}
+  </style>
+  <defs>
+    <marker id='a' viewBox='0 0 10 10' refX='10' refY='5' markerWidth='8' markerHeight='8' orient='auto-start-reverse'>
+      <path d='M 0 0 L 10 5 L 0 10 z' fill='#64748b' />
+    </marker>
+  </defs>
+
+  <rect x='20' y='20' width='900' height='480' rx='16' fill='#f8fafc' stroke='#e2e8f0'/>
+  <text x='40' y='52' class='title' font-size='20'>OSSB — Open Source Slim Builder (Rootless BuildKit)</text>
+
+  <!-- Left: Runner -->
+  <rect class='box' x='60' y='100' width='220' height='150' rx='10'/>
+  <text x='72' y='128' class='title'>CI/Runner</text>
+  <text x='72' y='154' class='text'>• scripts/ossb</text>
+  <text x='72' y='178' class='text'>• Docker or Podman</text>
+  <text x='72' y='202' class='text'>• QEMU/binfmt (once)</text>
+
+  <!-- Middle: Ephemeral BuildKit -->
+  <rect class='box' x='360' y='100' width='240' height='150' rx='10'/>
+  <text x='372' y='128' class='title'>Ephemeral buildkitd</text>
+  <text x='372' y='154' class='text'>rootless container</text>
+  <text x='372' y='178' class='text'>serves buildctl API</text>
+  <text x='372' y='202' class='muted'>stopped after build</text>
+
+  <!-- Right: Registry -->
+  <rect class='box' x='700' y='100' width='180' height='150' rx='10'/>
+  <text x='712' y='128' class='title'>Registry</text>
+  <text x='712' y='154' class='text'>GHCR/ECR/ACR/DockerHub</text>
+  <text x='712' y='178' class='text'>Multi-arch image</text>
+  <text x='712' y='202' class='text'>Cache layer (optional)</text>
+
+  <!-- Arrows -->
+  <line class='arrow' x1='280' y1='175' x2='360' y2='175'/>
+  <text x='288' y='168' class='muted'>start & call</text>
+  <line class='arrow' x1='600' y1='175' x2='700' y2='175'/>
+  <text x='612' y='168' class='muted'>push image</text>
+
+  <!-- Bottom: Kubernetes Option -->
+  <rect class='box' x='120' y='310' width='700' height='150' rx='10'/>
+  <text x='132' y='338' class='title'>Kubernetes (optional)</text>
+  <text x='132' y='364' class='text'>• DaemonSet: tonistiigi/binfmt (once) for cross-arch emulation</text>
+  <text x='132' y='388' class='text'>• Job: buildkitd + client Pod → buildctl → push → exit</text>
+  <text x='132' y='412' class='text'>• Secrets: dockerconfigjson for registry auth</text>
+</svg>

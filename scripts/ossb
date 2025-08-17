@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# OSSB — Open Source Slim Builder (rootless BuildKit wrapper)
+# Headless, rootless, multi-arch builds using buildkitd + buildctl.
+#
+# Example:
+#   ./scripts/ossb build --context . --file Dockerfile --tag ghcr.io/you/app:1.0 \
+#       --platform linux/amd64,linux/arm64 --push --registry-cache ghcr.io/you/app:buildcache
+#
+# Env:
+#   RUNTIME=docker|podman (default: autodetect)
+#   DOCKER_CONFIG (propagated for registry auth)
+
+die(){ echo "error: $*" >&2; exit 1; }
+
+RUNTIME="${RUNTIME:-}"
+if [[ -z "$RUNTIME" ]]; then
+  if command -v docker >/dev/null 2>&1; then RUNTIME=docker;
+  elif command -v podman >/dev/null 2>&1; then RUNTIME=podman;
+  else die "Neither docker nor podman found"; fi
+fi
+
+cmd="${1:-}"; shift || true
+[[ "$cmd" == "build" ]] || die "Usage: $0 build [options]. Use --help for flags."
+
+CONTEXT="."
+DOCKERFILE="Dockerfile"
+TAG=""
+PLATFORMS="linux/amd64"
+PUSH="false"
+REG_CACHE=""
+BUILD_ARGS=()
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --context) CONTEXT="$2"; shift 2;;
+    --file|--dockerfile) DOCKERFILE="$2"; shift 2;;
+    --tag|--tags) TAG="$2"; shift 2;;
+    --platform|--platforms) PLATFORMS="$2"; shift 2;;
+    --push) PUSH="true"; shift;;
+    --registry-cache) REG_CACHE="$2"; shift 2;;
+    --build-arg) BUILD_ARGS+=("--opt" "build-arg:$2"); shift 2;;
+    --help|-h) echo "OSSB — flags: --context --file --tag --platform --push --registry-cache --build-arg KEY=VAL"; exit 0;;
+    *) die "Unknown flag: $1";;
+  esac
+done
+
+[[ -n "$TAG" ]] || die "--tag is required"
+CONTEXT_ABS="$(cd "$CONTEXT" && pwd)"
+[[ -f "$CONTEXT_ABS/$DOCKERFILE" ]] || die "Dockerfile not found at $CONTEXT_ABS/$DOCKERFILE"
+
+NAME="ossb-bk-$RANDOM"
+SECOPTS=(--security-opt seccomp=unconfined --security-opt apparmor=unconfined)
+PORT_MAP=(-p 127.0.0.1:12345:1234)
+MOUNTS=(-v "$CONTEXT_ABS:/workspace" -w /workspace)
+
+if [[ -n "${DOCKER_CONFIG:-}" && -f "${DOCKER_CONFIG}/config.json" ]]; then
+  MOUNTS+=( -v "${DOCKER_CONFIG}:/home/user/.docker:ro" )
+  DOCKER_CONFIG_ENV=(-e DOCKER_CONFIG=/home/user/.docker)
+elif [[ -f "$HOME/.docker/config.json" ]]; then
+  MOUNTS+=( -v "$HOME/.docker:/home/user/.docker:ro" )
+  DOCKER_CONFIG_ENV=(-e DOCKER_CONFIG=/home/user/.docker)
+else
+  DOCKER_CONFIG_ENV=()
+fi
+
+echo "==> Starting rootless buildkitd container ($RUNTIME run)"
+$RUNTIME run -d --rm --name "$NAME" "${SECOPTS[@]}" "${MOUNTS[@]}" "${DOCKER_CONFIG_ENV[@]}"   -e BUILDKITD_FLAGS=--oci-worker-no-process-sandbox   -p 127.0.0.1:12345:1234 moby/buildkit:rootless   --addr tcp://0.0.0.0:1234 --oci-worker-no-process-sandbox >/dev/null
+
+cleanup(){ echo "==> Stopping buildkitd ($NAME)"; $RUNTIME stop -t 1 "$NAME" >/dev/null 2>&1 || true; }
+trap cleanup EXIT
+
+echo "==> Waiting for buildkitd to be ready..."
+for i in $(seq 1 30); do
+  if $RUNTIME exec "$NAME" buildctl --addr tcp://127.0.0.1:1234 debug workers >/dev/null 2>&1; then break; fi
+  sleep 1
+  [[ $i -eq 30 ]] && die "buildkitd did not become ready"
+done
+
+OUT_ARGS=(--output "type=image,name=$TAG,push=$PUSH")
+CACHE_ARGS=()
+[[ -n "$REG_CACHE" ]] && CACHE_ARGS=(--export-cache "type=registry,ref=$REG_CACHE,mode=max" --import-cache "type=registry,ref=$REG_CACHE")
+
+set -x
+$RUNTIME exec "$NAME" buildctl --addr tcp://127.0.0.1:1234 build   --frontend dockerfile.v0   --local context=/workspace   --local dockerfile=/workspace   --opt filename="$DOCKERFILE"   --opt platform="$PLATFORMS"   "${BUILD_ARGS[@]}"   "${OUT_ARGS[@]}"   "${CACHE_ARGS[@]}"
+set +x
+
+echo "==> Build complete"
