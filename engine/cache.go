@@ -115,6 +115,98 @@ func (c *Cache) Info() (*types.CacheInfo, error) {
 	return info, nil
 }
 
+func (c *Cache) GetPlatformCacheInfo(platform types.Platform) (*types.CacheInfo, error) {
+	info := &types.CacheInfo{
+		Hits:   c.hits,
+		Misses: c.misses,
+	}
+
+	if c.hits+c.misses > 0 {
+		info.HitRate = float64(c.hits) / float64(c.hits+c.misses)
+	}
+
+	var totalSize int64
+	var totalFiles int
+
+	err := filepath.Walk(c.baseDir, func(path string, fileInfo os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+
+		if !fileInfo.IsDir() && strings.HasSuffix(path, ".json") {
+			// Check if this cache entry is for the specific platform
+			// by reading the entry and checking the platform field
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return nil
+			}
+
+			var entry CacheEntry
+			if err := json.Unmarshal(data, &entry); err != nil {
+				return nil
+			}
+
+			if entry.Result != nil && entry.Result.Operation != nil {
+				if entry.Result.Operation.Platform.String() == platform.String() {
+					totalFiles++
+					totalSize += fileInfo.Size()
+				}
+			}
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to calculate platform cache info: %v", err)
+	}
+
+	info.TotalSize = totalSize
+	info.TotalFiles = totalFiles
+
+	return info, nil
+}
+
+func (c *Cache) PrunePlatform(platform types.Platform) error {
+	cutoff := time.Now().Add(-24 * time.Hour)
+
+	err := filepath.Walk(c.baseDir, func(path string, fileInfo os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+
+		if !fileInfo.IsDir() && strings.HasSuffix(path, ".json") {
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return nil
+			}
+
+			var entry CacheEntry
+			if err := json.Unmarshal(data, &entry); err != nil {
+				return nil
+			}
+
+			if entry.Result != nil && entry.Result.Operation != nil {
+				if entry.Result.Operation.Platform.String() == platform.String() {
+					if fileInfo.ModTime().Before(cutoff) {
+						if err := os.Remove(path); err != nil {
+							return err
+						}
+					}
+				}
+			}
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		return fmt.Errorf("failed to prune platform cache: %v", err)
+	}
+
+	return c.removeEmptyDirs(c.baseDir)
+}
+
 func (c *Cache) Prune() error {
 	cutoff := time.Now().Add(-24 * time.Hour) 
 
