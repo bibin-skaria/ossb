@@ -1,0 +1,270 @@
+package main
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+
+	"github.com/spf13/cobra"
+
+	"github.com/bibin-skaria/ossb/engine"
+	_ "github.com/bibin-skaria/ossb/executors"
+	_ "github.com/bibin-skaria/ossb/exporters"
+	_ "github.com/bibin-skaria/ossb/frontends/dockerfile"
+	"github.com/bibin-skaria/ossb/internal/types"
+)
+
+var (
+	Version   = "dev"
+	GitCommit = "unknown"
+	BuildDate = "unknown"
+)
+
+func main() {
+	if err := newRootCommand().Execute(); err != nil {
+		os.Exit(1)
+	}
+}
+
+func newRootCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "ossb",
+		Short: "Open Source Slim Builder - A monolithic container builder",
+		Long: `OSSB is a monolithic container builder inspired by BuildKit but designed 
+as a single binary with no daemon dependency. It features content-addressable 
+caching, pluggable frontends, executors, and exporters.`,
+		Version: fmt.Sprintf("%s (commit: %s, built: %s)", Version, GitCommit, BuildDate),
+	}
+
+	cmd.AddCommand(newBuildCommand())
+	cmd.AddCommand(newCacheCommand())
+
+	return cmd
+}
+
+func newBuildCommand() *cobra.Command {
+	var (
+		dockerfile string
+		tags       []string
+		output     string
+		frontend   string
+		cacheDir   string
+		noCache    bool
+		progress   bool
+		buildArgs  []string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "build [context]",
+		Short: "Build an image from a Dockerfile",
+		Long: `Build a container image from a Dockerfile. The context should be the path 
+to the directory containing the Dockerfile and any files referenced by it.`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			context := "."
+			if len(args) > 0 {
+				context = args[0]
+			}
+
+			absContext, err := filepath.Abs(context)
+			if err != nil {
+				return fmt.Errorf("failed to resolve context path: %v", err)
+			}
+
+			if _, err := os.Stat(absContext); os.IsNotExist(err) {
+				return fmt.Errorf("context directory does not exist: %s", absContext)
+			}
+
+			dockerfilePath := filepath.Join(absContext, dockerfile)
+			if _, err := os.Stat(dockerfilePath); os.IsNotExist(err) {
+				return fmt.Errorf("Dockerfile does not exist: %s", dockerfilePath)
+			}
+
+			buildArgsMap := make(map[string]string)
+			for _, arg := range buildArgs {
+				parts := strings.SplitN(arg, "=", 2)
+				if len(parts) == 2 {
+					buildArgsMap[parts[0]] = parts[1]
+				} else {
+					buildArgsMap[parts[0]] = ""
+				}
+			}
+
+			config := &types.BuildConfig{
+				Context:    absContext,
+				Dockerfile: dockerfile,
+				Tags:       tags,
+				Output:     output,
+				Frontend:   frontend,
+				CacheDir:   cacheDir,
+				NoCache:    noCache,
+				Progress:   progress,
+				BuildArgs:  buildArgsMap,
+			}
+
+			builder, err := engine.NewBuilder(config)
+			if err != nil {
+				return fmt.Errorf("failed to create builder: %v", err)
+			}
+			defer builder.Cleanup()
+
+			result, err := builder.Build()
+			if err != nil {
+				return fmt.Errorf("build failed: %v", err)
+			}
+
+			if !result.Success {
+				return fmt.Errorf("build failed: %s", result.Error)
+			}
+
+			fmt.Printf("Build completed successfully!\n")
+			if result.OutputPath != "" {
+				fmt.Printf("Output: %s\n", result.OutputPath)
+			}
+			if result.ImageID != "" {
+				fmt.Printf("Image ID: %s\n", result.ImageID)
+			}
+			fmt.Printf("Operations: %d\n", result.Operations)
+			fmt.Printf("Cache hits: %d\n", result.CacheHits)
+			fmt.Printf("Duration: %s\n", result.Duration)
+
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVarP(&dockerfile, "file", "f", "Dockerfile", "Path to the Dockerfile")
+	cmd.Flags().StringArrayVarP(&tags, "tag", "t", []string{}, "Name and optionally a tag in the 'name:tag' format")
+	cmd.Flags().StringVarP(&output, "output", "o", "image", "Output type (image, tar, local)")
+	cmd.Flags().StringVar(&frontend, "frontend", "dockerfile", "Frontend type")
+	cmd.Flags().StringVar(&cacheDir, "cache-dir", "", "Cache directory (default: ~/.ossb/cache)")
+	cmd.Flags().BoolVar(&noCache, "no-cache", false, "Disable caching")
+	cmd.Flags().BoolVar(&progress, "progress", true, "Show progress")
+	cmd.Flags().StringArrayVar(&buildArgs, "build-arg", []string{}, "Build arguments in KEY=VALUE format")
+
+	return cmd
+}
+
+func newCacheCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "cache",
+		Short: "Manage build cache",
+		Long:  "Commands for managing the OSSB build cache.",
+	}
+
+	cmd.AddCommand(newCacheInfoCommand())
+	cmd.AddCommand(newCachePruneCommand())
+
+	return cmd
+}
+
+func newCacheInfoCommand() *cobra.Command {
+	var cacheDir string
+
+	cmd := &cobra.Command{
+		Use:   "info",
+		Short: "Show cache statistics",
+		Long:  "Display information about the current cache including size and hit rate.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if cacheDir == "" {
+				homeDir, err := os.UserHomeDir()
+				if err != nil {
+					return fmt.Errorf("failed to get home directory: %v", err)
+				}
+				cacheDir = filepath.Join(homeDir, ".ossb", "cache")
+			}
+
+			cache := engine.NewCache(cacheDir)
+			info, err := cache.Info()
+			if err != nil {
+				return fmt.Errorf("failed to get cache info: %v", err)
+			}
+
+			fmt.Printf("Cache Directory: %s\n", cacheDir)
+			fmt.Printf("Total Size: %s\n", formatBytes(info.TotalSize))
+			fmt.Printf("Total Files: %d\n", info.TotalFiles)
+			fmt.Printf("Hit Rate: %.2f%%\n", info.HitRate*100)
+			fmt.Printf("Hits: %d\n", info.Hits)
+			fmt.Printf("Misses: %d\n", info.Misses)
+
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&cacheDir, "cache-dir", "", "Cache directory (default: ~/.ossb/cache)")
+
+	return cmd
+}
+
+func newCachePruneCommand() *cobra.Command {
+	var cacheDir string
+
+	cmd := &cobra.Command{
+		Use:   "prune",
+		Short: "Remove unused cache entries",
+		Long:  "Remove cache entries older than 24 hours.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if cacheDir == "" {
+				homeDir, err := os.UserHomeDir()
+				if err != nil {
+					return fmt.Errorf("failed to get home directory: %v", err)
+				}
+				cacheDir = filepath.Join(homeDir, ".ossb", "cache")
+			}
+
+			cache := engine.NewCache(cacheDir)
+			
+			infoBefore, err := cache.Info()
+			if err != nil {
+				return fmt.Errorf("failed to get cache info: %v", err)
+			}
+
+			if err := cache.Prune(); err != nil {
+				return fmt.Errorf("failed to prune cache: %v", err)
+			}
+
+			infoAfter, err := cache.Info()
+			if err != nil {
+				return fmt.Errorf("failed to get cache info after prune: %v", err)
+			}
+
+			freedFiles := infoBefore.TotalFiles - infoAfter.TotalFiles
+			freedSize := infoBefore.TotalSize - infoAfter.TotalSize
+
+			fmt.Printf("Cache pruned successfully!\n")
+			fmt.Printf("Removed %d files\n", freedFiles)
+			fmt.Printf("Freed %s\n", formatBytes(freedSize))
+			fmt.Printf("Remaining: %d files, %s\n", infoAfter.TotalFiles, formatBytes(infoAfter.TotalSize))
+
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&cacheDir, "cache-dir", "", "Cache directory (default: ~/.ossb/cache)")
+
+	return cmd
+}
+
+func formatBytes(bytes int64) string {
+	const unit = 1024
+	if bytes < unit {
+		return fmt.Sprintf("%d B", bytes)
+	}
+	
+	div, exp := int64(unit), 0
+	for n := bytes / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	
+	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
+}
+
+func init() {
+	cobra.OnInitialize(func() {
+		if os.Getenv("OSSB_DEBUG") != "" {
+			fmt.Fprintf(os.Stderr, "OSSB Debug Mode Enabled\n")
+		}
+	})
+}

@@ -39,3 +39,6 @@ Thumbs.db
 
 # --- Terragrunt (if you ever use it) ---
 .terragrunt-cache/
+
+# --- claude (if you user to create context) ---
+CLAUDE.md
