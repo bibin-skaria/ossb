@@ -8,10 +8,13 @@ OSSB (Open Source Slim Builder) is a monolithic container builder inspired by Bu
 - **📦 Content-Addressable Caching**: Efficient layer caching like BuildKit
 - **🧩 Pluggable System**: Extensible frontends, executors, and exporters
 - **🐳 Complete Dockerfile Support**: All standard Dockerfile instructions
-- **📁 Multiple Output Formats**: Image, tar, and local filesystem exports
+- **📁 Multiple Output Formats**: Image, tar, local filesystem, and multi-arch exports
 - **🔍 Dependency Graph Solver**: Topological sorting with cycle detection
 - **⚡ Fast Builds**: Optimized execution with intelligent caching
 - **🖥️ Cross-Platform**: Supports Linux, macOS, and Windows
+- **🏗️ Multi-Architecture Support**: Build for multiple platforms simultaneously
+- **🐋 Container Integration**: Native Docker/Podman support with QEMU emulation
+- **📤 Registry Push**: Direct push to container registries with manifest lists
 
 ## Quick Start
 
@@ -36,15 +39,25 @@ go install github.com/bibin-skaria/ossb/cmd@latest
 # Build a container image from current directory
 ossb build . -t myapp:latest
 
+# Build for multiple architectures (multi-arch)
+ossb build . -t myapp:latest --platform linux/amd64,linux/arm64
+
 # Build with different output formats
 ossb build . -t myapp --output tar
 ossb build . -t myapp --output local
+ossb build . -t myapp --output multiarch --platform linux/amd64,linux/arm64
 
 # Build with custom Dockerfile
 ossb build . -f custom.Dockerfile -t myapp:v1.0
 
 # Build with build arguments
 ossb build . -t myapp --build-arg VERSION=1.0 --build-arg ENV=prod
+
+# Build and push to registry (multi-arch)
+ossb build . -t myregistry.com/myapp:latest --platform linux/amd64,linux/arm64 --push --registry myregistry.com
+
+# Use container executor for proper cross-compilation
+ossb build . -t myapp:latest --platform linux/amd64,linux/arm64 --executor container
 
 # Disable caching for clean build
 ossb build . -t myapp --no-cache
@@ -107,7 +120,11 @@ ossb build [context] [flags]
 **Flags:**
 - `-f, --file string` - Dockerfile path (default: "Dockerfile")
 - `-t, --tag strings` - Image tags (format: name:tag)
-- `-o, --output string` - Output type: image, tar, local (default: "image")
+- `-o, --output string` - Output type: image, tar, local, multiarch (default: "image")
+- `--platform strings` - Target platforms (e.g., linux/amd64,linux/arm64)
+- `--push` - Push image to registry after build
+- `--registry string` - Registry to push to (required with --push)
+- `--executor string` - Executor type: local, container (default: "container")
 - `--frontend string` - Frontend type (default: "dockerfile")
 - `--cache-dir string` - Cache directory (default: ~/.ossb/cache)
 - `--no-cache` - Disable caching
@@ -214,6 +231,31 @@ CMD ["app"]
 
 ```bash
 ossb build . -t goapp:latest
+```
+
+### Multi-Architecture Build
+```dockerfile
+FROM golang:1.21-alpine AS builder
+WORKDIR /app
+COPY go.* ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -o app .
+
+FROM alpine:latest
+RUN apk --no-cache add ca-certificates
+COPY --from=builder /app/app /usr/local/bin/app
+CMD ["app"]
+```
+
+```bash
+# Build for multiple architectures
+ossb build . -t myapp:latest --platform linux/amd64,linux/arm64,linux/arm/v7
+
+# Build and push to registry with manifest list
+ossb build . -t registry.io/myapp:latest \
+  --platform linux/amd64,linux/arm64 \
+  --push --registry registry.io
 ```
 
 ## License

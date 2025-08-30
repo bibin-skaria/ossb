@@ -80,12 +80,23 @@ func (b *Builder) Build() (*types.BuildResult, error) {
 	start := time.Now()
 	
 	result := &types.BuildResult{
-		Success:  false,
-		Metadata: make(map[string]string),
+		Success:         false,
+		Metadata:        make(map[string]string),
+		PlatformResults: make(map[string]*types.PlatformResult),
 	}
 
+	if len(b.config.Platforms) == 0 {
+		b.config.Platforms = []types.Platform{types.GetHostPlatform()}
+	}
+
+	result.MultiArch = len(b.config.Platforms) > 1
+
 	if b.config.Progress && b.progressOut != nil {
-		fmt.Fprintf(b.progressOut, "Starting build...\n")
+		if result.MultiArch {
+			fmt.Fprintf(b.progressOut, "Starting multi-arch build for %d platforms...\n", len(b.config.Platforms))
+		} else {
+			fmt.Fprintf(b.progressOut, "Starting build for %s...\n", b.config.Platforms[0].String())
+		}
 	}
 
 	dockerfilePath := filepath.Join(b.config.Context, b.config.Dockerfile)
@@ -99,80 +110,137 @@ func (b *Builder) Build() (*types.BuildResult, error) {
 		fmt.Fprintf(b.progressOut, "Parsing Dockerfile...\n")
 	}
 
-	operations, err := b.frontend.Parse(string(dockerfileContent), b.config)
-	if err != nil {
-		result.Error = fmt.Sprintf("failed to parse Dockerfile: %v", err)
-		return result, nil
-	}
+	totalCacheHits := 0
+	allSuccess := true
+	
+	for _, platform := range b.config.Platforms {
+		platformResult := &types.PlatformResult{
+			Platform: platform,
+			Success:  false,
+		}
+		result.PlatformResults[platform.String()] = platformResult
 
-	result.Operations = len(operations)
+		if b.config.Progress && b.progressOut != nil {
+			fmt.Fprintf(b.progressOut, "\nBuilding for platform %s...\n", platform.String())
+		}
 
-	if b.config.Progress && b.progressOut != nil {
-		fmt.Fprintf(b.progressOut, "Building dependency graph for %d operations...\n", len(operations))
-	}
+		operations, err := b.frontend.Parse(string(dockerfileContent), b.config)
+		if err != nil {
+			platformResult.Error = fmt.Sprintf("failed to parse Dockerfile: %v", err)
+			allSuccess = false
+			continue
+		}
 
-	if err := b.solver.BuildGraph(operations); err != nil {
-		result.Error = fmt.Sprintf("failed to build dependency graph: %v", err)
-		return result, nil
-	}
-
-	executionOrder, err := b.solver.GetExecutionOrder()
-	if err != nil {
-		result.Error = fmt.Sprintf("failed to get execution order: %v", err)
-		return result, nil
-	}
-
-	if b.config.Progress && b.progressOut != nil {
-		fmt.Fprintf(b.progressOut, "Executing operations...\n")
-	}
-
-	cacheHits := 0
-	for i, nodeID := range executionOrder {
-		operation := b.solver.GetOperation(nodeID)
-		if operation == nil {
-			result.Error = fmt.Sprintf("operation not found for node %s", nodeID)
-			return result, nil
+		for _, op := range operations {
+			op.Platform = platform
 		}
 
 		if b.config.Progress && b.progressOut != nil {
-			fmt.Fprintf(b.progressOut, "[%d/%d] Executing %s operation...\n", i+1, len(executionOrder), operation.Type)
+			fmt.Fprintf(b.progressOut, "Building dependency graph for %d operations on %s...\n", len(operations), platform.String())
 		}
 
-		opResult, err := b.executeOperation(operation)
+		solver := NewGraphSolver()
+		if err := solver.BuildGraph(operations); err != nil {
+			platformResult.Error = fmt.Sprintf("failed to build dependency graph: %v", err)
+			allSuccess = false
+			continue
+		}
+
+		executionOrder, err := solver.GetExecutionOrder()
 		if err != nil {
-			result.Error = fmt.Sprintf("failed to execute operation: %v", err)
+			platformResult.Error = fmt.Sprintf("failed to get execution order: %v", err)
+			allSuccess = false
+			continue
+		}
+
+		if b.config.Progress && b.progressOut != nil {
+			fmt.Fprintf(b.progressOut, "Executing %d operations for %s...\n", len(executionOrder), platform.String())
+		}
+
+		cacheHits := 0
+		for i, nodeID := range executionOrder {
+			operation := solver.GetOperation(nodeID)
+			if operation == nil {
+				platformResult.Error = fmt.Sprintf("operation not found for node %s", nodeID)
+				allSuccess = false
+				break
+			}
+
+			if b.config.Progress && b.progressOut != nil {
+				fmt.Fprintf(b.progressOut, "[%s %d/%d] Executing %s operation...\n", platform.String(), i+1, len(executionOrder), operation.Type)
+			}
+
+			opResult, err := b.executeOperation(operation)
+			if err != nil {
+				platformResult.Error = fmt.Sprintf("failed to execute operation: %v", err)
+				allSuccess = false
+				break
+			}
+
+			if !opResult.Success {
+				platformResult.Error = fmt.Sprintf("operation failed: %s", opResult.Error)
+				allSuccess = false
+				break
+			}
+
+			if opResult.CacheHit {
+				cacheHits++
+			}
+
+			b.updateResultMetadata(result, operation, opResult)
+		}
+
+		if platformResult.Error == "" {
+			platformResult.Success = true
+			platformResult.ImageID = fmt.Sprintf("%s-%s", b.config.Tags[0], platform.String())
+			totalCacheHits += cacheHits
+		}
+	}
+
+	result.Operations = len(b.config.Platforms) * result.Operations // Multiply by platform count
+	result.CacheHits = totalCacheHits
+	result.Success = allSuccess
+
+	if !allSuccess {
+		var failedPlatforms []string
+		for platformStr, platformResult := range result.PlatformResults {
+			if !platformResult.Success {
+				failedPlatforms = append(failedPlatforms, platformStr)
+			}
+		}
+		result.Error = fmt.Sprintf("build failed for platforms: %s", strings.Join(failedPlatforms, ", "))
+	}
+
+	if result.Success {
+		if b.config.Progress && b.progressOut != nil {
+			fmt.Fprintf(b.progressOut, "Exporting result...\n")
+		}
+
+		if err := b.exporter.Export(result, b.config, b.workDir); err != nil {
+			result.Error = fmt.Sprintf("failed to export result: %v", err)
+			result.Success = false
 			return result, nil
 		}
-
-		if !opResult.Success {
-			result.Error = fmt.Sprintf("operation failed: %s", opResult.Error)
-			return result, nil
-		}
-
-		if opResult.CacheHit {
-			cacheHits++
-		}
-
-		b.updateResultMetadata(result, operation, opResult)
 	}
 
-	result.CacheHits = cacheHits
-
-	if b.config.Progress && b.progressOut != nil {
-		fmt.Fprintf(b.progressOut, "Exporting result...\n")
-	}
-
-	if err := b.exporter.Export(result, b.config, b.workDir); err != nil {
-		result.Error = fmt.Sprintf("failed to export result: %v", err)
-		return result, nil
-	}
-
-	result.Success = true
 	result.Duration = time.Since(start).String()
 
 	if b.config.Progress && b.progressOut != nil {
-		fmt.Fprintf(b.progressOut, "Build completed successfully in %s\n", result.Duration)
-		fmt.Fprintf(b.progressOut, "Cache hits: %d/%d operations\n", cacheHits, len(operations))
+		if result.Success {
+			fmt.Fprintf(b.progressOut, "Build completed successfully in %s\n", result.Duration)
+			if result.MultiArch {
+				successfulBuilds := 0
+				for _, platformResult := range result.PlatformResults {
+					if platformResult.Success {
+						successfulBuilds++
+					}
+				}
+				fmt.Fprintf(b.progressOut, "Successfully built %d/%d platforms\n", successfulBuilds, len(b.config.Platforms))
+			}
+		} else {
+			fmt.Fprintf(b.progressOut, "Build failed: %s\n", result.Error)
+		}
+		fmt.Fprintf(b.progressOut, "Cache hits: %d operations\n", totalCacheHits)
 	}
 
 	return result, nil
