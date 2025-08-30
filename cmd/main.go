@@ -58,6 +58,7 @@ func newBuildCommand() *cobra.Command {
 		push       bool
 		registry   string
 		executor   string
+		rootless   bool
 	)
 
 	cmd := &cobra.Command{
@@ -109,6 +110,11 @@ to the directory containing the Dockerfile and any files referenced by it.`,
 				output = "multiarch"
 			}
 
+			// Auto-select executor based on rootless flag
+			if rootless && executor == "container" {
+				executor = "rootless"
+			}
+
 			config := &types.BuildConfig{
 				Context:    absContext,
 				Dockerfile: dockerfile,
@@ -122,6 +128,7 @@ to the directory containing the Dockerfile and any files referenced by it.`,
 				Platforms:  targetPlatforms,
 				Push:       push,
 				Registry:   registry,
+				Rootless:   rootless,
 			}
 
 			builder, err := engine.NewBuilder(config)
@@ -190,7 +197,8 @@ to the directory containing the Dockerfile and any files referenced by it.`,
 	cmd.Flags().StringArrayVar(&platforms, "platform", []string{}, "Target platforms (e.g., linux/amd64,linux/arm64)")
 	cmd.Flags().BoolVar(&push, "push", false, "Push image to registry after build")
 	cmd.Flags().StringVar(&registry, "registry", "", "Registry to push to (required with --push)")
-	cmd.Flags().StringVar(&executor, "executor", "container", "Executor type (local, container)")
+	cmd.Flags().StringVar(&executor, "executor", "container", "Executor type (local, container, rootless)")
+	cmd.Flags().BoolVar(&rootless, "rootless", false, "Enable rootless mode (requires no root privileges)")
 
 	return cmd
 }

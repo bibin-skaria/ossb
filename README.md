@@ -15,6 +15,8 @@ OSSB (Open Source Slim Builder) is a monolithic container builder inspired by Bu
 - **🏗️ Multi-Architecture Support**: Build for multiple platforms simultaneously
 - **🐋 Container Integration**: Native Docker/Podman support with QEMU emulation
 - **📤 Registry Push**: Direct push to container registries with manifest lists
+- **👤 Rootless Mode**: Run without root privileges using rootless containers
+- **🔒 User Namespace Support**: Secure builds with user namespace isolation
 
 ## Quick Start
 
@@ -58,6 +60,15 @@ ossb build . -t myregistry.com/myapp:latest --platform linux/amd64,linux/arm64 -
 
 # Use container executor for proper cross-compilation
 ossb build . -t myapp:latest --platform linux/amd64,linux/arm64 --executor container
+
+# ROOTLESS MODE - No root privileges required
+ossb build . -t myapp:latest --rootless
+
+# Rootless multi-arch build
+ossb build . -t myapp:latest --platform linux/amd64,linux/arm64 --rootless
+
+# Rootless build with push (uses rootless Podman/Docker)
+ossb build . -t registry.io/myapp:latest --platform linux/amd64,linux/arm64 --rootless --push --registry registry.io
 
 # Disable caching for clean build
 ossb build . -t myapp --no-cache
@@ -124,7 +135,8 @@ ossb build [context] [flags]
 - `--platform strings` - Target platforms (e.g., linux/amd64,linux/arm64)
 - `--push` - Push image to registry after build
 - `--registry string` - Registry to push to (required with --push)
-- `--executor string` - Executor type: local, container (default: "container")
+- `--executor string` - Executor type: local, container, rootless (default: "container")
+- `--rootless` - Enable rootless mode (requires no root privileges)
 - `--frontend string` - Frontend type (default: "dockerfile")
 - `--cache-dir string` - Cache directory (default: ~/.ossb/cache)
 - `--no-cache` - Disable caching
@@ -257,6 +269,61 @@ ossb build . -t registry.io/myapp:latest \
   --platform linux/amd64,linux/arm64 \
   --push --registry registry.io
 ```
+
+## Rootless Mode
+
+OSSB supports **rootless operation** for secure builds without requiring root privileges:
+
+### Prerequisites for Rootless Mode
+```bash
+# Install rootless Podman (recommended)
+sudo apt install podman
+
+# Or configure Docker for rootless mode
+dockerd-rootless-setuptool.sh install
+
+# Verify user namespaces are available
+cat /proc/sys/user/max_user_namespaces  # Should be > 0
+```
+
+### Rootless Examples
+```bash
+# Simple rootless build
+ossb build . -t myapp:latest --rootless
+
+# Rootless multi-architecture build
+ossb build . -t myapp:latest \
+  --platform linux/amd64,linux/arm64 \
+  --rootless
+
+# Rootless build with registry push
+ossb build . -t ghcr.io/myapp:latest \
+  --platform linux/amd64,linux/arm64 \
+  --rootless --push --registry ghcr.io
+
+# Rootless with custom cache directory (in user home)
+ossb build . -t myapp:latest \
+  --rootless --cache-dir ~/.ossb/rootless-cache
+```
+
+### Rootless Features
+- ✅ **No sudo required**: Runs entirely as regular user
+- ✅ **User namespace isolation**: Secure container execution
+- ✅ **Multi-arch support**: Cross-platform builds without privileged containers
+- ✅ **Registry push**: Direct push using rootless container runtime
+- ✅ **Separate caching**: Isolated cache in user directory
+- ✅ **QEMU emulation**: Unprivileged cross-architecture support
+
+### Rootless vs Regular Mode
+
+| Feature | Regular Mode | Rootless Mode |
+|---------|--------------|---------------|
+| Root privileges | Required for container operations | Not required |
+| Container runtime | Docker/Podman (privileged) | Rootless Podman/Docker |
+| QEMU emulation | Privileged containers | User-mode emulation |
+| Cache location | System-wide | User directory |
+| Security | Host root access | User namespace isolated |
+| Registry push | Full access | User credentials only |
 
 ## License
 

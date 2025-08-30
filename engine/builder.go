@@ -42,7 +42,12 @@ func NewBuilder(config *types.BuildConfig) (*Builder, error) {
 		return nil, fmt.Errorf("failed to create work directory: %v", err)
 	}
 
-	cache := NewCache(config.CacheDir)
+	var cache *Cache
+	if config.Rootless {
+		cache = NewRootlessCache(config.CacheDir)
+	} else {
+		cache = NewCache(config.CacheDir)
+	}
 	solver := NewGraphSolver()
 
 	frontend, err := frontends.GetFrontend(config.Frontend)
@@ -50,9 +55,16 @@ func NewBuilder(config *types.BuildConfig) (*Builder, error) {
 		return nil, fmt.Errorf("failed to get frontend: %v", err)
 	}
 
-	executor, err := executors.GetExecutor("local")
+	executorType := "local"
+	if config.Rootless {
+		executorType = "rootless"
+	} else if len(config.Platforms) > 1 || (len(config.Platforms) == 1 && config.Platforms[0].String() != types.GetHostPlatform().String()) {
+		executorType = "container"
+	}
+
+	executor, err := executors.GetExecutor(executorType)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get executor: %v", err)
+		return nil, fmt.Errorf("failed to get executor %s: %v", executorType, err)
 	}
 
 	exporter, err := exporters.GetExporter(config.Output)
