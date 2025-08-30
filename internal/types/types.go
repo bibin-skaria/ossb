@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"runtime"
 )
 
 type OperationType string
@@ -17,6 +18,59 @@ const (
 	OperationTypeMeta   OperationType = "meta"
 )
 
+type Platform struct {
+	OS           string `json:"os"`
+	Architecture string `json:"architecture"`
+	Variant      string `json:"variant,omitempty"`
+}
+
+func (p Platform) String() string {
+	if p.Variant != "" {
+		return fmt.Sprintf("%s/%s/%s", p.OS, p.Architecture, p.Variant)
+	}
+	return fmt.Sprintf("%s/%s", p.OS, p.Architecture)
+}
+
+func ParsePlatform(platform string) Platform {
+	parts := strings.Split(platform, "/")
+	if len(parts) < 2 {
+		return Platform{OS: "linux", Architecture: "amd64"}
+	}
+	
+	p := Platform{
+		OS:           parts[0],
+		Architecture: parts[1],
+	}
+	
+	if len(parts) > 2 {
+		p.Variant = parts[2]
+	}
+	
+	return p
+}
+
+func GetHostPlatform() Platform {
+	return Platform{
+		OS:           runtime.GOOS,
+		Architecture: runtime.GOARCH,
+	}
+}
+
+func GetSupportedPlatforms() []Platform {
+	return []Platform{
+		{OS: "linux", Architecture: "amd64"},
+		{OS: "linux", Architecture: "arm64"},
+		{OS: "linux", Architecture: "arm", Variant: "v7"},
+		{OS: "linux", Architecture: "arm", Variant: "v6"},
+		{OS: "linux", Architecture: "386"},
+		{OS: "linux", Architecture: "ppc64le"},
+		{OS: "linux", Architecture: "s390x"},
+		{OS: "windows", Architecture: "amd64"},
+		{OS: "darwin", Architecture: "amd64"},
+		{OS: "darwin", Architecture: "arm64"},
+	}
+}
+
 type Operation struct {
 	Type        OperationType     `json:"type"`
 	Command     []string          `json:"command,omitempty"`
@@ -26,6 +80,7 @@ type Operation struct {
 	Metadata    map[string]string `json:"metadata,omitempty"`
 	WorkDir     string            `json:"workdir,omitempty"`
 	User        string            `json:"user,omitempty"`
+	Platform    Platform          `json:"platform,omitempty"`
 }
 
 func (o *Operation) CacheKey() string {
@@ -37,6 +92,7 @@ func (o *Operation) CacheKey() string {
 		Metadata    map[string]string `json:"metadata,omitempty"`
 		WorkDir     string            `json:"workdir,omitempty"`
 		User        string            `json:"user,omitempty"`
+		Platform    Platform          `json:"platform,omitempty"`
 	}{
 		Type:        o.Type,
 		Command:     o.Command,
@@ -45,6 +101,7 @@ func (o *Operation) CacheKey() string {
 		Metadata:    o.Metadata,
 		WorkDir:     o.WorkDir,
 		User:        o.User,
+		Platform:    o.Platform,
 	}
 	
 	jsonData, _ := json.Marshal(data)
@@ -229,6 +286,9 @@ type BuildConfig struct {
 	NoCache     bool              `json:"no_cache"`
 	Progress    bool              `json:"progress"`
 	BuildArgs   map[string]string `json:"build_args"`
+	Platforms   []Platform        `json:"platforms,omitempty"`
+	Push        bool              `json:"push,omitempty"`
+	Registry    string            `json:"registry,omitempty"`
 }
 
 type CacheInfo struct {
@@ -239,15 +299,27 @@ type CacheInfo struct {
 	Misses      int64 `json:"misses"`
 }
 
+type PlatformResult struct {
+	Platform   Platform          `json:"platform"`
+	Success    bool              `json:"success"`
+	Error      string            `json:"error,omitempty"`
+	ImageID    string            `json:"image_id,omitempty"`
+	ManifestID string            `json:"manifest_id,omitempty"`
+	Size       int64             `json:"size,omitempty"`
+}
+
 type BuildResult struct {
-	Success     bool              `json:"success"`
-	Error       string            `json:"error,omitempty"`
-	Operations  int               `json:"operations"`
-	CacheHits   int               `json:"cache_hits"`
-	Duration    string            `json:"duration"`
-	OutputPath  string            `json:"output_path,omitempty"`
-	ImageID     string            `json:"image_id,omitempty"`
-	Metadata    map[string]string `json:"metadata,omitempty"`
+	Success         bool                       `json:"success"`
+	Error           string                     `json:"error,omitempty"`
+	Operations      int                        `json:"operations"`
+	CacheHits       int                        `json:"cache_hits"`
+	Duration        string                     `json:"duration"`
+	OutputPath      string                     `json:"output_path,omitempty"`
+	ImageID         string                     `json:"image_id,omitempty"`
+	ManifestListID  string                     `json:"manifest_list_id,omitempty"`
+	Metadata        map[string]string          `json:"metadata,omitempty"`
+	PlatformResults map[string]*PlatformResult `json:"platform_results,omitempty"`
+	MultiArch       bool                       `json:"multi_arch,omitempty"`
 }
 
 type DockerfileInstruction struct {

@@ -54,6 +54,10 @@ func newBuildCommand() *cobra.Command {
 		noCache    bool
 		progress   bool
 		buildArgs  []string
+		platforms  []string
+		push       bool
+		registry   string
+		executor   string
 	)
 
 	cmd := &cobra.Command{
@@ -92,6 +96,19 @@ to the directory containing the Dockerfile and any files referenced by it.`,
 				}
 			}
 
+			var targetPlatforms []types.Platform
+			if len(platforms) > 0 {
+				for _, platform := range platforms {
+					targetPlatforms = append(targetPlatforms, types.ParsePlatform(platform))
+				}
+			} else {
+				targetPlatforms = []types.Platform{types.GetHostPlatform()}
+			}
+
+			if len(targetPlatforms) > 1 && output == "image" {
+				output = "multiarch"
+			}
+
 			config := &types.BuildConfig{
 				Context:    absContext,
 				Dockerfile: dockerfile,
@@ -102,6 +119,9 @@ to the directory containing the Dockerfile and any files referenced by it.`,
 				NoCache:    noCache,
 				Progress:   progress,
 				BuildArgs:  buildArgsMap,
+				Platforms:  targetPlatforms,
+				Push:       push,
+				Registry:   registry,
 			}
 
 			builder, err := engine.NewBuilder(config)
@@ -120,15 +140,40 @@ to the directory containing the Dockerfile and any files referenced by it.`,
 			}
 
 			fmt.Printf("Build completed successfully!\n")
+			
+			if result.MultiArch && len(result.PlatformResults) > 1 {
+				fmt.Printf("Multi-architecture build completed for %d platforms:\n", len(result.PlatformResults))
+				for platformStr, platformResult := range result.PlatformResults {
+					status := "✓"
+					if !platformResult.Success {
+						status = "✗"
+					}
+					fmt.Printf("  %s %s", status, platformStr)
+					if platformResult.Error != "" {
+						fmt.Printf(" (error: %s)", platformResult.Error)
+					}
+					fmt.Printf("\n")
+				}
+				
+				if result.ManifestListID != "" {
+					fmt.Printf("Manifest List ID: %s\n", result.ManifestListID)
+				}
+			}
+			
 			if result.OutputPath != "" {
 				fmt.Printf("Output: %s\n", result.OutputPath)
 			}
 			if result.ImageID != "" {
 				fmt.Printf("Image ID: %s\n", result.ImageID)
 			}
+			
 			fmt.Printf("Operations: %d\n", result.Operations)
 			fmt.Printf("Cache hits: %d\n", result.CacheHits)
 			fmt.Printf("Duration: %s\n", result.Duration)
+			
+			if config.Push && result.Success {
+				fmt.Printf("Successfully pushed to registry\n")
+			}
 
 			return nil
 		},
@@ -136,12 +181,16 @@ to the directory containing the Dockerfile and any files referenced by it.`,
 
 	cmd.Flags().StringVarP(&dockerfile, "file", "f", "Dockerfile", "Path to the Dockerfile")
 	cmd.Flags().StringArrayVarP(&tags, "tag", "t", []string{}, "Name and optionally a tag in the 'name:tag' format")
-	cmd.Flags().StringVarP(&output, "output", "o", "image", "Output type (image, tar, local)")
+	cmd.Flags().StringVarP(&output, "output", "o", "image", "Output type (image, tar, local, multiarch)")
 	cmd.Flags().StringVar(&frontend, "frontend", "dockerfile", "Frontend type")
 	cmd.Flags().StringVar(&cacheDir, "cache-dir", "", "Cache directory (default: ~/.ossb/cache)")
 	cmd.Flags().BoolVar(&noCache, "no-cache", false, "Disable caching")
 	cmd.Flags().BoolVar(&progress, "progress", true, "Show progress")
 	cmd.Flags().StringArrayVar(&buildArgs, "build-arg", []string{}, "Build arguments in KEY=VALUE format")
+	cmd.Flags().StringArrayVar(&platforms, "platform", []string{}, "Target platforms (e.g., linux/amd64,linux/arm64)")
+	cmd.Flags().BoolVar(&push, "push", false, "Push image to registry after build")
+	cmd.Flags().StringVar(&registry, "registry", "", "Registry to push to (required with --push)")
+	cmd.Flags().StringVar(&executor, "executor", "container", "Executor type (local, container)")
 
 	return cmd
 }
