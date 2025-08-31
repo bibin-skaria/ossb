@@ -289,6 +289,7 @@ type BuildConfig struct {
 	Platforms   []Platform        `json:"platforms,omitempty"`
 	Push        bool              `json:"push,omitempty"`
 	Registry    string            `json:"registry,omitempty"`
+	Rootless    bool              `json:"rootless,omitempty"`
 }
 
 type CacheInfo struct {
