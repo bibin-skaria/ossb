@@ -32,6 +32,23 @@ func NewCache(baseDir string) *Cache {
 	}
 }
 
+func NewRootlessCache(baseDir string) *Cache {
+	// For rootless mode, store cache in user directory to avoid permission issues
+	if baseDir == "" {
+		homeDir, err := os.UserHomeDir()
+		if err == nil {
+			baseDir = filepath.Join(homeDir, ".ossb", "rootless-cache")
+		}
+	} else {
+		baseDir = filepath.Join(baseDir, "rootless")
+	}
+	
+	os.MkdirAll(baseDir, 0755)
+	return &Cache{
+		baseDir: baseDir,
+	}
+}
+
 func (c *Cache) Get(key string) (*types.OperationResult, bool) {
 	entryPath := c.getEntryPath(key)
 	
