@@ -1,22 +1,34 @@
 # OSSB - Open Source Slim Builder
 
-OSSB (Open Source Slim Builder) is a monolithic container builder inspired by BuildKit but designed as a single binary with no daemon dependency. It provides a simpler alternative to complex client-server container build systems while maintaining powerful features like content-addressable caching and pluggable architectures.
+## ⚠️ **PROOF-OF-CONCEPT STATUS**
+**OSSB is currently a proof-of-concept implementation (~35% complete) and is NOT production-ready. See [LIMITATIONS.md](LIMITATIONS.md) for details.**
 
-## Features
+OSSB (Open Source Slim Builder) is a monolithic container builder inspired by BuildKit but designed as a single binary with no daemon dependency. It demonstrates a simpler alternative to complex client-server container build systems while maintaining powerful architectural features like content-addressable caching and pluggable systems.
 
+**Docker Hub**: `bibin9992009/ossb-builder:latest` (CLI demo only)
+
+## Features (Current Implementation Status)
+
+### ✅ **Implemented & Working**
 - **🔧 Monolithic Architecture**: Single binary with no daemon dependency
-- **📦 Content-Addressable Caching**: Efficient layer caching like BuildKit
 - **🧩 Pluggable System**: Extensible frontends, executors, and exporters
-- **🐳 Complete Dockerfile Support**: All standard Dockerfile instructions
-- **📁 Multiple Output Formats**: Image, tar, local filesystem, and multi-arch exports
+- **🐳 Dockerfile Parsing**: Complete support for all standard Dockerfile instructions
 - **🔍 Dependency Graph Solver**: Topological sorting with cycle detection
-- **⚡ Fast Builds**: Optimized execution with intelligent caching
-- **🖥️ Cross-Platform**: Supports Linux, macOS, and Windows
-- **🏗️ Multi-Architecture Support**: Build for multiple platforms simultaneously
-- **🐋 Container Integration**: Native Docker/Podman support with QEMU emulation
-- **📤 Registry Push**: Direct push to container registries with manifest lists
-- **👤 Rootless Mode**: Run without root privileges using rootless containers
-- **🔒 User Namespace Support**: Secure builds with user namespace isolation
+- **📦 Cache Framework**: Content-addressable caching architecture (interface complete)
+- **🖥️ CLI Interface**: Full command-line interface with Cobra
+- **🏗️ Multi-Architecture Planning**: Parse and plan multi-platform builds
+- **👤 Rootless Container**: Proper user namespace setup and rootless execution environment
+
+### ⚠️ **Partially Implemented**
+- **📁 Output Format Architecture**: Framework exists, implementations incomplete
+- **🐋 Container Runtime Integration**: Rootless Podman/Buildah installed but not fully integrated
+
+### ❌ **Not Implemented (Critical Gaps)**
+- **Base Image Pulling**: Cannot pull images from registries (`FROM alpine:latest` fails)
+- **Command Execution**: RUN commands don't execute properly
+- **Layer Management**: No filesystem layer creation or management
+- **Registry Push**: Cannot push built images to registries
+- **OCI Compliance**: Image manifest generation incomplete
 
 ## Quick Start
 
