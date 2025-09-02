@@ -2,6 +2,7 @@ package executors
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/user"
@@ -133,7 +134,10 @@ func (e *RootlessExecutor) executeSource(operation *types.Operation, workDir str
 	exportCmd := e.buildRootlessCommand([]string{"export", containerName})
 	tarCmd := exec.Command("tar", "-xf", "-", "-C", baseDir, "--no-same-owner")
 	
-	exportCmd.Stdout = tarCmd.Stdin
+	// Create pipe between export and tar commands
+	pipeReader, pipeWriter := io.Pipe()
+	exportCmd.Stdout = pipeWriter
+	tarCmd.Stdin = pipeReader
 	tarCmd.Stderr = os.Stderr
 
 	if err := exportCmd.Start(); err != nil {
@@ -386,7 +390,7 @@ func (e *RootlessExecutor) setupRootlessQEMU(platform types.Platform) error {
 func (e *RootlessExecutor) captureRootlessChanges(baseDir, layerDir string) error {
 	// Use rsync to preserve ownership and permissions correctly
 	cmd := exec.Command("rsync", "-a", "--numeric-ids", baseDir+"/", layerDir+"/")
-	if output, err := cmd.CombinedOutput(); err != nil {
+	if _, err := cmd.CombinedOutput(); err != nil {
 		// Fallback to cp if rsync is not available
 		cmd = exec.Command("cp", "-a", baseDir+"/.", layerDir+"/")
 		if output, err := cmd.CombinedOutput(); err != nil {

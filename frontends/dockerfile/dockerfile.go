@@ -1,11 +1,9 @@
 package dockerfile
 
 import (
-	"bufio"
 	"fmt"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 
 	"github.com/bibin-skaria/ossb/frontends"

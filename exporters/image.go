@@ -35,6 +35,7 @@ type OCIImageConfig struct {
 	Created      time.Time         `json:"created"`
 	Architecture string            `json:"architecture"`
 	OS           string            `json:"os"`
+	Variant      string            `json:"variant,omitempty"`
 	Config       OCIContainerConfig `json:"config"`
 	RootFS       OCIRootFS         `json:"rootfs"`
 	History      []OCIHistory      `json:"history"`

@@ -268,7 +268,6 @@ func (e *MultiArchExporter) pushMultiArchImage(index *OCIIndex, config *types.Bu
 			tag = config.Registry + "/" + tag
 		}
 
-		indexPath := filepath.Join(imageDir, "index.json")
 		cmd := fmt.Sprintf("skopeo copy oci:%s:%s docker://%s", imageDir, "latest", tag)
 		
 		if err := e.runCommand(cmd); err != nil {
