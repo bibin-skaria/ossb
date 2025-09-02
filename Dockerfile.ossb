@@ -1,0 +1,211 @@
+# Dockerfile.ossb - OSSB Container Builder Image
+# Similar to Kaniko but using OSSB for rootless multi-arch builds
+
+FROM golang:1.21-alpine AS builder
+
+# Install build dependencies
+RUN apk add --no-cache \
+    git \
+    ca-certificates \
+    tzdata
+
+# Set working directory
+WORKDIR /workspace
+
+# Copy local source code instead of cloning
+COPY go.mod ./
+COPY . .
+
+# Download dependencies
+RUN go mod tidy && go mod download && go mod verify
+
+# Build OSSB binary with optimizations
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+    -ldflags="-w -s -X main.Version=$(git describe --tags --always --dirty 2>/dev/null || echo 'container') -X main.GitCommit=$(git rev-parse HEAD 2>/dev/null || echo 'unknown') -X main.BuildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    -a -installsuffix cgo \
+    -o /usr/local/bin/ossb \
+    ./cmd
+
+# Runtime stage - minimal image for execution
+FROM alpine:3.19
+
+# Install runtime dependencies for container operations
+RUN apk add --no-cache \
+    # Container runtime essentials
+    podman \
+    buildah \
+    skopeo \
+    runc \
+    # QEMU for multi-arch builds
+    qemu-img \
+    qemu \
+    # Filesystem and networking tools
+    fuse-overlayfs \
+    slirp4netns \
+    shadow-uidmap \
+    # SSL certificates
+    ca-certificates \
+    # Basic utilities
+    git \
+    tar \
+    gzip \
+    curl \
+    # User management
+    shadow \
+    && rm -rf /var/cache/apk/*
+
+# Create ossb user for rootless operation (similar to kaniko user)
+RUN adduser -D -u 9999 -s /bin/sh ossb && \
+    # Setup user namespaces for rootless containers
+    echo "ossb:100000:65536" >> /etc/subuid && \
+    echo "ossb:100000:65536" >> /etc/subgid && \
+    # Create necessary directories
+    mkdir -p /home/ossb/.local/share/containers && \
+    mkdir -p /home/ossb/.config/containers && \
+    mkdir -p /home/ossb/.ossb/cache && \
+    mkdir -p /workspace && \
+    # Set ownership
+    chown -R ossb:ossb /home/ossb /workspace
+
+# Configure rootless Podman for ossb user
+RUN echo '[storage]' > /etc/containers/storage.conf && \
+    echo 'driver = "overlay"' >> /etc/containers/storage.conf && \
+    echo 'runroot = "/tmp/containers-user-9999"' >> /etc/containers/storage.conf && \
+    echo 'graphroot = "/home/ossb/.local/share/containers/storage"' >> /etc/containers/storage.conf && \
+    echo '[storage.options]' >> /etc/containers/storage.conf && \
+    echo 'mount_program = "/usr/bin/fuse-overlayfs"' >> /etc/containers/storage.conf && \
+    # Container runtime configuration
+    echo '[containers]' > /etc/containers/containers.conf && \
+    echo 'netns="host"' >> /etc/containers/containers.conf && \
+    echo 'userns="host"' >> /etc/containers/containers.conf && \
+    echo 'ipcns="host"' >> /etc/containers/containers.conf && \
+    echo 'utsns="host"' >> /etc/containers/containers.conf && \
+    echo 'cgroupns="host"' >> /etc/containers/containers.conf && \
+    echo '[engine]' >> /etc/containers/containers.conf && \
+    echo 'cgroup_manager = "cgroupfs"' >> /etc/containers/containers.conf && \
+    echo 'events_logger="file"' >> /etc/containers/containers.conf && \
+    echo 'runtime="runc"' >> /etc/containers/containers.conf
+
+# Setup multi-arch emulation (like Kaniko's multi-platform support)
+RUN mkdir -p /usr/bin && \
+    # Setup binfmt for cross-architecture builds
+    echo ':qemu-aarch64:M::\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\xb7\x00:\xff\xff\xff\xff\xff\xff\xff\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff:/usr/bin/qemu-aarch64-static:F' > /tmp/binfmt-aarch64 || true && \
+    echo ':qemu-arm:M::\x7fELF\x01\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x28\x00:\xff\xff\xff\xff\xff\xff\xff\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff:/usr/bin/qemu-arm-static:F' > /tmp/binfmt-arm || true
+
+# Copy OSSB binary from builder stage
+COPY --from=builder /usr/local/bin/ossb /usr/local/bin/ossb
+RUN chmod +x /usr/local/bin/ossb
+
+# Create ossb-executor wrapper script (similar to kaniko executor) as root
+RUN echo '#!/bin/sh\n\
+set -e\n\
+\n\
+# OSSB Executor - Container Builder (like kaniko executor)\n\
+# Usage: ossb-executor --context=. --dockerfile=Dockerfile --destination=image:tag\n\
+\n\
+# Default values (similar to kaniko defaults)\n\
+CONTEXT="."\n\
+DOCKERFILE="Dockerfile"\n\
+DESTINATION=""\n\
+PLATFORMS="linux/amd64"\n\
+CACHE="true"\n\
+PUSH="false"\n\
+REGISTRY=""\n\
+VERBOSITY="info"\n\
+\n\
+# Parse arguments (kaniko-style)\n\
+for arg in "$@"; do\n\
+    case $arg in\n\
+        --context=*)\n\
+            CONTEXT="${arg#*=}"\n\
+            shift\n\
+            ;;\n\
+        --dockerfile=*)\n\
+            DOCKERFILE="${arg#*=}"\n\
+            shift\n\
+            ;;\n\
+        --destination=*)\n\
+            DESTINATION="${arg#*=}"\n\
+            shift\n\
+            ;;\n\
+        --custom-platform=*)\n\
+            PLATFORMS="${arg#*=}"\n\
+            shift\n\
+            ;;\n\
+        --cache=*)\n\
+            CACHE="${arg#*=}"\n\
+            shift\n\
+            ;;\n\
+        --force)\n\
+            PUSH="true"\n\
+            shift\n\
+            ;;\n\
+        --no-push)\n\
+            PUSH="false"\n\
+            shift\n\
+            ;;\n\
+        *)\n\
+            echo "Unknown argument: $arg"\n\
+            ;;\n\
+    esac\n\
+done\n\
+\n\
+# Validate required arguments\n\
+if [ -z "$DESTINATION" ]; then\n\
+    echo "Error: --destination is required"\n\
+    echo "Usage: ossb-executor --context=. --dockerfile=Dockerfile --destination=image:tag"\n\
+    exit 1\n\
+fi\n\
+\n\
+# Build OSSB command\n\
+OSSB_ARGS="$CONTEXT -t $DESTINATION -f $DOCKERFILE --rootless --platform $PLATFORMS"\n\
+\n\
+if [ "$CACHE" = "false" ]; then\n\
+    OSSB_ARGS="$OSSB_ARGS --no-cache"\n\
+fi\n\
+\n\
+if [ "$PUSH" = "true" ]; then\n\
+    OSSB_ARGS="$OSSB_ARGS --push"\n\
+fi\n\
+\n\
+echo "Building with OSSB: ossb build $OSSB_ARGS"\n\
+\n\
+# Execute OSSB build\n\
+exec ossb build $OSSB_ARGS' > /usr/local/bin/ossb-executor && chmod +x /usr/local/bin/ossb-executor
+
+# Switch to ossb user (similar to kaniko)
+USER ossb
+WORKDIR /workspace
+
+# Set environment variables for rootless operation
+ENV HOME="/home/ossb"
+ENV XDG_RUNTIME_DIR="/tmp/runtime-ossb"
+ENV BUILDAH_ISOLATION="chroot"
+ENV _CONTAINERS_USERNS_CONFIGURED=""
+ENV STORAGE_DRIVER="overlay"
+
+# Create runtime directory with proper permissions
+RUN mkdir -p /tmp/runtime-ossb && chmod 700 /tmp/runtime-ossb || true
+
+# Health check (similar to kaniko)
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD ossb --version >/dev/null 2>&1
+
+# Default working directory
+WORKDIR /workspace
+
+# Default entrypoint (similar to kaniko executor)
+ENTRYPOINT ["/usr/local/bin/ossb"]
+
+# Default command shows help
+CMD ["--help"]
+
+# Labels for container identification
+LABEL \
+    maintainer="OSSB Team" \
+    description="OSSB Container Builder - Rootless multi-arch alternative to Kaniko" \
+    version="1.0" \
+    kaniko.alternative="true" \
+    ossb.rootless="true" \
+    ossb.multiarch="true" \
+    usage="docker run --rm -v \$(pwd):/workspace ossb:latest --context=/workspace --dockerfile=Dockerfile --destination=image:tag"

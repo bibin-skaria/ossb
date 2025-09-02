@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -126,7 +127,10 @@ func (e *ContainerExecutor) executeSource(operation *types.Operation, workDir st
 	exportCmd := exec.Command(e.runtime, "export", containerName)
 	tarCmd := exec.Command("tar", "-xf", "-", "-C", baseDir)
 	
-	exportCmd.Stdout = tarCmd.Stdin
+	// Create pipe between export and tar commands
+	pipeReader, pipeWriter := io.Pipe()
+	exportCmd.Stdout = pipeWriter
+	tarCmd.Stdin = pipeReader
 	tarCmd.Stderr = os.Stderr
 
 	if err := exportCmd.Start(); err != nil {
@@ -183,7 +187,6 @@ func (e *ContainerExecutor) executeExec(operation *types.Operation, workDir stri
 		}
 	}
 
-	containerName := fmt.Sprintf("ossb-build-%d", time.Now().UnixNano())
 	platformFlag := fmt.Sprintf("--platform=%s", platform.String())
 
 	dockerfileContent := fmt.Sprintf(`FROM scratch
