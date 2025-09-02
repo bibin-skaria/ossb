@@ -171,7 +171,7 @@ func (g *Graph) TopologicalSort() ([]string, error) {
 	
 	for _, node := range g.Nodes {
 		for _, dep := range node.Dependencies {
-			inDegree[node.ID]++
+			inDegree[dep]++
 		}
 	}
 	
