@@ -1,0 +1,14 @@
+{
+  "name": "custom-ossb-app",
+  "version": "1.0.0",
+  "description": "A custom Node.js app built with OSSB",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js"
+  },
+  "dependencies": {
+    "express": "^4.18.0"
+  },
+  "author": "OSSB User",
+  "license": "MIT"
+}

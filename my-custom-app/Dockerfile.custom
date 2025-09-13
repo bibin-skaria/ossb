@@ -1,0 +1,25 @@
+FROM node:18-alpine
+
+# Set working directory
+WORKDIR /usr/src/app
+
+# Copy package files
+COPY package*.json ./
+
+# Install dependencies
+RUN npm install
+
+# Copy application code
+COPY . .
+
+# Create a simple app
+RUN echo 'const express = require("express");' > app.js && \
+    echo 'const app = express();' >> app.js && \
+    echo 'app.get("/", (req, res) => res.send("Hello from Custom OSSB App!"));' >> app.js && \
+    echo 'app.listen(3000, () => console.log("Server running on port 3000"));' >> app.js
+
+# Expose port
+EXPOSE 3000
+
+# Start the application
+CMD ["node", "app.js"]

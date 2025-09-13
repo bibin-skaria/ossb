@@ -1,0 +1,338 @@
+# Final Integration and Validation Test Configuration for OSSB
+
+# Test Environment Configuration
+environment:
+  timeout: "30m"
+  parallel: 4
+  verbose: true
+  cleanup_cache: false
+  
+  # Output directories
+  output_dir: "./test-results"
+  cache_dir: "./test-cache"
+  temp_dir: "/tmp/ossb-tests"
+
+# Tool Configuration
+tools:
+  ossb_binary: "./ossb"
+  
+  # Comparison tools (optional)
+  kaniko:
+    enabled: true
+    binary: "kaniko"
+    timeout: "20m"
+  
+  buildkit:
+    enabled: true
+    binary: "docker"
+    buildx: true
+    timeout: "20m"
+  
+  # OCI validation tools
+  oci_tools:
+    oci_image_tool:
+      enabled: true
+      install_if_missing: true
+    skopeo:
+      enabled: true
+      install_if_missing: false
+    crane:
+      enabled: true
+      install_if_missing: true
+
+# Registry Configuration
+registries:
+  docker_hub:
+    url: "docker.io"
+    anonymous: true
+    rate_limit_aware: true
+  
+  test_registry:
+    url: "localhost:5000"
+    insecure: true
+    setup_local: true
+  
+  private_registry:
+    url: "${PRIVATE_REGISTRY_URL}"
+    username: "${PRIVATE_REGISTRY_USERNAME}"
+    password: "${PRIVATE_REGISTRY_PASSWORD}"
+    enabled: false  # Only if environment variables are set
+
+# Kubernetes Configuration
+kubernetes:
+  enabled: true
+  auto_detect: true
+  namespace: "default"
+  
+  # Test job configuration
+  job_config:
+    memory_limit: "2Gi"
+    cpu_limit: "1000m"
+    timeout: "30m"
+    
+  # Secret configuration
+  secrets:
+    registry_credentials: "registry-credentials"
+    build_secrets: "build-secrets"
+
+# Test Suites Configuration
+test_suites:
+  
+  # Real-world Dockerfile tests
+  real_world_tests:
+    enabled: true
+    timeout: "20m"
+    
+    test_cases:
+      - name: "production_web_app"
+        description: "Production-ready web application with multi-stage build"
+        platforms: ["linux/amd64"]
+        validation: "complex_app"
+        
+      - name: "microservice_go_app"
+        description: "Go microservice with security scanning and multi-arch support"
+        platforms: ["linux/amd64", "linux/arm64"]
+        validation: "multi_arch"
+        
+      - name: "python_ml_pipeline"
+        description: "Python ML pipeline with GPU support and data processing"
+        platforms: ["linux/amd64"]
+        validation: "ml_pipeline"
+        
+      - name: "database_with_init"
+        description: "Database container with initialization scripts and health checks"
+        platforms: ["linux/amd64"]
+        validation: "database"
+
+  # OCI compliance tests
+  oci_compliance_tests:
+    enabled: true
+    timeout: "15m"
+    
+    validation_tools:
+      - "oci-image-tool"
+      - "skopeo"
+      - "crane"
+      - "docker"
+    
+    test_cases:
+      - name: "oci_compliant_image"
+        description: "Basic OCI compliant image with proper labels"
+        
+      - name: "multi_arch_oci_image"
+        description: "Multi-architecture OCI compliant image"
+        platforms: ["linux/amd64", "linux/arm64"]
+
+  # Kubernetes integration tests
+  kubernetes_tests:
+    enabled: true
+    timeout: "25m"
+    
+    test_cases:
+      - name: "simple_build_job"
+        description: "Simple build job in Kubernetes"
+        resources:
+          memory: "2Gi"
+          cpu: "1000m"
+          
+      - name: "multi_arch_build_job"
+        description: "Multi-architecture build job"
+        platforms: ["linux/amd64", "linux/arm64"]
+        resources:
+          memory: "4Gi"
+          cpu: "2000m"
+          
+      - name: "secret_handling_job"
+        description: "Build job with secret handling"
+        secrets: true
+        push: true
+
+  # Security audit tests
+  security_tests:
+    enabled: true
+    timeout: "20m"
+    
+    test_categories:
+      - name: "rootless_execution"
+        description: "Verify builds run without root privileges"
+        critical: true
+        
+      - name: "secret_handling"
+        description: "Verify secure handling of build secrets"
+        critical: true
+        
+      - name: "privilege_escalation"
+        description: "Test for privilege escalation vulnerabilities"
+        critical: true
+        
+      - name: "container_escape"
+        description: "Test for container escape vulnerabilities"
+        critical: true
+        
+      - name: "resource_limits"
+        description: "Verify resource limit enforcement"
+        critical: false
+        
+      - name: "input_validation"
+        description: "Test input validation and sanitization"
+        critical: true
+        
+      - name: "network_isolation"
+        description: "Verify network isolation during builds"
+        critical: false
+        
+      - name: "filesystem_security"
+        description: "Test filesystem access restrictions"
+        critical: false
+        
+      - name: "build_context_security"
+        description: "Test build context security"
+        critical: false
+        
+      - name: "registry_security"
+        description: "Test registry security"
+        critical: false
+
+  # Performance benchmark tests
+  performance_tests:
+    enabled: true
+    timeout: "30m"
+    iterations: 3
+    
+    benchmark_categories:
+      - name: "build_speed_comparison"
+        description: "Compare build speeds with other tools"
+        compare_tools: ["kaniko", "buildkit"]
+        
+      - name: "memory_usage_analysis"
+        description: "Analyze memory usage patterns"
+        track_memory: true
+        
+      - name: "cache_efficiency"
+        description: "Measure cache hit rates and effectiveness"
+        test_cache: true
+        
+      - name: "concurrent_builds"
+        description: "Test performance under concurrent load"
+        concurrency_levels: [1, 2, 4, 8]
+        
+      - name: "large_context_handling"
+        description: "Test performance with large build contexts"
+        context_sizes: ["10MB", "100MB", "500MB"]
+        
+      - name: "multi_arch_performance"
+        description: "Measure multi-architecture build performance"
+        platforms: ["linux/amd64", "linux/arm64"]
+
+# Validation Criteria
+validation:
+  
+  # Performance thresholds
+  performance:
+    max_build_time: "10m"  # Maximum acceptable build time for simple builds
+    max_memory_usage: "2GB"  # Maximum memory usage
+    min_cache_hit_rate: 80  # Minimum cache hit rate percentage
+    max_concurrent_failures: 10  # Maximum percentage of concurrent build failures
+  
+  # Security requirements
+  security:
+    require_rootless: true
+    require_no_privilege_escalation: true
+    require_secret_masking: true
+    require_input_validation: true
+    max_critical_failures: 0  # No critical security failures allowed
+  
+  # OCI compliance requirements
+  oci_compliance:
+    require_valid_manifest: true
+    require_valid_config: true
+    require_proper_media_types: true
+    require_digest_validation: true
+    min_validation_tools: 2  # Minimum number of validation tools that must pass
+
+# Reporting Configuration
+reporting:
+  formats: ["markdown", "json", "html"]
+  
+  # Report sections
+  sections:
+    - "executive_summary"
+    - "test_results"
+    - "performance_analysis"
+    - "security_assessment"
+    - "oci_compliance"
+    - "recommendations"
+    - "detailed_logs"
+  
+  # Output files
+  output_files:
+    summary: "final-integration-test-summary.md"
+    detailed: "final-integration-test-detailed.md"
+    json: "final-integration-test-results.json"
+    html: "final-integration-test-report.html"
+
+# Cleanup Configuration
+cleanup:
+  auto_cleanup: true
+  preserve_on_failure: true
+  
+  # What to clean up
+  cleanup_items:
+    - "test_images"
+    - "test_containers"
+    - "temp_directories"
+    - "kubernetes_resources"
+  
+  # What to preserve
+  preserve_items:
+    - "test_results"
+    - "logs"
+    - "reports"
+    - "cache" # Preserve cache for subsequent runs
+
+# Notification Configuration (optional)
+notifications:
+  enabled: false
+  
+  # Notification channels
+  channels:
+    slack:
+      enabled: false
+      webhook_url: "${SLACK_WEBHOOK_URL}"
+      
+    email:
+      enabled: false
+      smtp_server: "${SMTP_SERVER}"
+      recipients: ["${NOTIFICATION_EMAIL}"]
+      
+    github:
+      enabled: false
+      token: "${GITHUB_TOKEN}"
+      repository: "${GITHUB_REPOSITORY}"
+
+# Advanced Configuration
+advanced:
+  
+  # Retry configuration
+  retry:
+    max_retries: 2
+    retry_delay: "30s"
+    retry_on_failure: true
+  
+  # Parallel execution
+  parallelism:
+    max_parallel_tests: 4
+    max_parallel_builds: 2
+  
+  # Resource monitoring
+  monitoring:
+    enabled: true
+    interval: "10s"
+    metrics: ["cpu", "memory", "disk", "network"]
+  
+  # Debug configuration
+  debug:
+    enabled: false
+    verbose_logging: true
+    preserve_intermediate_files: false
+    capture_build_logs: true

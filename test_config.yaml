@@ -1,0 +1,209 @@
+# OSSB Integration Test Configuration
+
+# Test execution settings
+execution:
+  timeout: "30m"
+  parallel: 4
+  verbose: false
+  cleanup_cache: false
+
+# Test categories to run
+categories:
+  unit: true
+  integration: true
+  registry: true
+  kubernetes: false  # Requires K8s cluster
+  performance: false # Requires comparison tools
+
+# Registry configuration for testing
+registries:
+  docker_hub:
+    url: "docker.io"
+    anonymous: true
+    rate_limit_aware: true
+  
+  test_registry:
+    url: "localhost:5000"
+    insecure: true
+    anonymous: true
+  
+  private_registry:
+    url: "${PRIVATE_REGISTRY_URL}"
+    username: "${PRIVATE_REGISTRY_USERNAME}"
+    password: "${PRIVATE_REGISTRY_PASSWORD}"
+  
+  gcr:
+    url: "gcr.io"
+    service_account_key: "${GOOGLE_APPLICATION_CREDENTIALS}"
+
+# Kubernetes test configuration
+kubernetes:
+  namespace: "default"
+  job_name_prefix: "ossb-test"
+  resource_limits:
+    memory: "2Gi"
+    cpu: "1000m"
+  timeout: "20m"
+  cleanup_jobs: true
+
+# Performance test configuration
+performance:
+  tools:
+    kaniko:
+      enabled: false
+      command: "kaniko"
+    buildkit:
+      enabled: false
+      command: "docker buildx build"
+  
+  benchmarks:
+    simple_builds: true
+    multi_arch_builds: true
+    caching_performance: true
+    memory_usage: true
+    concurrent_builds: true
+  
+  thresholds:
+    max_memory_mb: 2048
+    max_build_time_minutes: 10
+    min_cache_hit_rate: 0.8
+
+# Test scenarios configuration
+scenarios:
+  dockerfiles:
+    simple:
+      - name: "alpine_basic"
+        base_image: "alpine:latest"
+        complexity: "low"
+      - name: "ubuntu_packages"
+        base_image: "ubuntu:20.04"
+        complexity: "medium"
+      - name: "node_app"
+        base_image: "node:18-alpine"
+        complexity: "medium"
+    
+    multi_stage:
+      - name: "go_app"
+        stages: 2
+        complexity: "high"
+      - name: "complex_deps"
+        stages: 4
+        complexity: "high"
+    
+    multi_arch:
+      platforms:
+        - "linux/amd64"
+        - "linux/arm64"
+        - "linux/arm/v7"
+      emulation_required: true
+
+# Test data configuration
+test_data:
+  build_contexts:
+    small: "1MB"
+    medium: "10MB"
+    large: "100MB"
+  
+  file_patterns:
+    - "*.txt"
+    - "*.json"
+    - "*.sh"
+    - "src/**/*"
+    - "assets/**/*"
+  
+  generated_files:
+    package_json: true
+    go_mod: true
+    requirements_txt: true
+    dockerfile_variants: true
+
+# Monitoring and reporting
+monitoring:
+  progress_reporting: true
+  structured_logging: true
+  metrics_collection: true
+  
+  outputs:
+    junit_xml: true
+    json_report: true
+    markdown_report: true
+    performance_charts: false
+
+# Environment-specific overrides
+environments:
+  ci:
+    execution:
+      timeout: "45m"
+      parallel: 2
+    categories:
+      performance: false
+      kubernetes: false
+  
+  local:
+    execution:
+      verbose: true
+    categories:
+      performance: true
+  
+  kubernetes:
+    categories:
+      kubernetes: true
+    kubernetes:
+      cleanup_jobs: false
+
+# Error handling configuration
+error_handling:
+  retry_attempts: 3
+  retry_delay: "10s"
+  fail_fast: false
+  continue_on_error: false
+  
+  ignore_patterns:
+    - "rate limit"
+    - "temporary network error"
+    - "context deadline exceeded"
+
+# Cache configuration for tests
+cache:
+  enabled: true
+  directory: "./test-cache"
+  max_size: "5GB"
+  cleanup_after_tests: false
+  
+  strategies:
+    content_addressable: true
+    layer_deduplication: true
+    manifest_caching: true
+
+# Security test configuration
+security:
+  rootless_testing: true
+  privilege_escalation_checks: true
+  secret_handling_validation: true
+  network_isolation_tests: true
+  
+  vulnerability_scanning:
+    enabled: false
+    tools: ["trivy", "grype"]
+    fail_on_high: false
+
+# Integration points
+integrations:
+  docker:
+    required: false
+    socket_path: "/var/run/docker.sock"
+  
+  podman:
+    required: false
+    rootless: true
+  
+  kubernetes:
+    required: false
+    config_path: "~/.kube/config"
+    context: ""
+  
+  registries:
+    local_registry:
+      enabled: false
+      port: 5000
+      start_automatically: false

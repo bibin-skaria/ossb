@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -13,6 +15,7 @@ import (
 	_ "github.com/bibin-skaria/ossb/exporters"
 	_ "github.com/bibin-skaria/ossb/frontends/dockerfile"
 	"github.com/bibin-skaria/ossb/internal/types"
+	"github.com/bibin-skaria/ossb/k8s"
 )
 
 var (
@@ -67,22 +70,72 @@ func newBuildCommand() *cobra.Command {
 to the directory containing the Dockerfile and any files referenced by it.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Generate build ID
+			buildID := fmt.Sprintf("ossb-build-%d", time.Now().Unix())
+			
+			// Initialize Kubernetes integration if running in Kubernetes
+			var jobManager *k8s.JobLifecycleManager
+			k8sIntegration := k8s.NewKubernetesIntegration()
+			
+			if k8sIntegration.IsRunningInKubernetes() {
+				jobManager = k8s.NewJobLifecycleManager(buildID)
+				fmt.Printf("Running in Kubernetes environment\n")
+			}
+
+			ctx := context.Background()
+			
+			// Start job lifecycle if in Kubernetes
+			if jobManager != nil {
+				var err error
+				ctx, err = jobManager.Start(ctx)
+				if err != nil {
+					return fmt.Errorf("failed to start job lifecycle: %v", err)
+				}
+				
+				// Add cleanup for builder
+				defer func() {
+					if jobManager != nil {
+						// This will be called by Complete/Fail methods
+					}
+				}()
+			}
+
 			context := "."
 			if len(args) > 0 {
 				context = args[0]
 			}
 
+			// Handle build context mounting in Kubernetes
+			if jobManager != nil {
+				if err := jobManager.GetIntegration().MountBuildContext(context); err != nil {
+					// If mounting fails, try to use the provided context path
+					fmt.Printf("Warning: Failed to mount build context from Kubernetes: %v\n", err)
+				}
+			}
+
 			absContext, err := filepath.Abs(context)
 			if err != nil {
+				if jobManager != nil {
+					jobManager.Fail(ctx, err, "context_resolution")
+					return nil
+				}
 				return fmt.Errorf("failed to resolve context path: %v", err)
 			}
 
 			if _, err := os.Stat(absContext); os.IsNotExist(err) {
+				if jobManager != nil {
+					jobManager.Fail(ctx, err, "context_validation")
+					return nil
+				}
 				return fmt.Errorf("context directory does not exist: %s", absContext)
 			}
 
 			dockerfilePath := filepath.Join(absContext, dockerfile)
 			if _, err := os.Stat(dockerfilePath); os.IsNotExist(err) {
+				if jobManager != nil {
+					jobManager.Fail(ctx, err, "dockerfile_validation")
+					return nil
+				}
 				return fmt.Errorf("Dockerfile does not exist: %s", dockerfilePath)
 			}
 
@@ -130,19 +183,73 @@ to the directory containing the Dockerfile and any files referenced by it.`,
 				Rootless:   rootless,
 			}
 
+			// Load Kubernetes secrets and configuration if available
+			if jobManager != nil {
+				if registryConfig, err := jobManager.GetIntegration().LoadRegistryCredentials(); err == nil {
+					config.RegistryConfig = registryConfig
+				}
+				
+				if secrets, err := jobManager.GetIntegration().LoadBuildSecrets(); err == nil {
+					config.Secrets = secrets
+				}
+				
+				// Report build start
+				platformStrs := make([]string, len(targetPlatforms))
+				for i, p := range targetPlatforms {
+					platformStrs[i] = p.String()
+				}
+				jobManager.GetLogger().LogBuildStart(ctx, platformStrs, tags)
+				jobManager.ReportProgress(ctx, "init", 5.0, "Starting build", "", "INIT", false)
+			}
+
 			builder, err := engine.NewBuilder(config)
 			if err != nil {
+				if jobManager != nil {
+					jobManager.Fail(ctx, err, "builder_creation")
+					return nil
+				}
 				return fmt.Errorf("failed to create builder: %v", err)
 			}
-			defer builder.Cleanup()
+			
+			// Add builder cleanup to job manager
+			if jobManager != nil {
+				jobManager.AddCleanupFunc(func() error {
+					builder.Cleanup()
+					return nil
+				})
+			} else {
+				defer builder.Cleanup()
+			}
+
+			// Report progress during build
+			if jobManager != nil {
+				jobManager.ReportProgress(ctx, "build", 10.0, "Building container image", "", "BUILD", false)
+			}
 
 			result, err := builder.Build()
 			if err != nil {
+				if jobManager != nil {
+					jobManager.Fail(ctx, err, "build")
+					return nil
+				}
 				return fmt.Errorf("build failed: %v", err)
 			}
 
 			if !result.Success {
-				return fmt.Errorf("build failed: %s", result.Error)
+				buildErr := fmt.Errorf("build failed: %s", result.Error)
+				if jobManager != nil {
+					jobManager.Fail(ctx, buildErr, "build")
+					return nil
+				}
+				return buildErr
+			}
+
+			// Complete job lifecycle if in Kubernetes
+			if jobManager != nil {
+				exitCode := jobManager.Complete(ctx, result)
+				if exitCode != k8s.ExitCodeSuccess {
+					os.Exit(int(exitCode))
+				}
 			}
 
 			fmt.Printf("Build completed successfully!\n")
