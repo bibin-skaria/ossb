@@ -7,15 +7,21 @@ import (
 	"sort"
 	"strings"
 	"runtime"
+	"time"
 )
 
 type OperationType string
 
 const (
-	OperationTypeSource OperationType = "source"
-	OperationTypeExec   OperationType = "exec"
-	OperationTypeFile   OperationType = "file"
-	OperationTypeMeta   OperationType = "meta"
+	OperationTypeSource   OperationType = "source"
+	OperationTypeExec     OperationType = "exec"
+	OperationTypeFile     OperationType = "file"
+	OperationTypeMeta     OperationType = "meta"
+	OperationTypePull     OperationType = "pull"     // Pull base image
+	OperationTypeExtract  OperationType = "extract"  // Extract image layers
+	OperationTypeLayer    OperationType = "layer"    // Create filesystem layer
+	OperationTypeManifest OperationType = "manifest" // Generate manifest
+	OperationTypePush     OperationType = "push"     // Push to registry
 )
 
 type Platform struct {
@@ -290,6 +296,40 @@ type BuildConfig struct {
 	Push        bool              `json:"push,omitempty"`
 	Registry    string            `json:"registry,omitempty"`
 	Rootless    bool              `json:"rootless,omitempty"`
+	
+	// Registry configuration
+	RegistryConfig  *RegistryConfig   `json:"registry_config,omitempty"`
+	Secrets         map[string]string `json:"secrets,omitempty"`
+	NetworkMode     string            `json:"network_mode,omitempty"`
+	SecurityContext *SecurityContext  `json:"security_context,omitempty"`
+	ResourceLimits  *ResourceLimits   `json:"resource_limits,omitempty"`
+}
+
+type RegistryConfig struct {
+	DefaultRegistry string                    `json:"default_registry,omitempty"`
+	Registries      map[string]RegistryAuth   `json:"registries,omitempty"`
+	Insecure        []string                  `json:"insecure,omitempty"`
+	Mirrors         map[string][]string       `json:"mirrors,omitempty"`
+}
+
+type RegistryAuth struct {
+	Username string `json:"username,omitempty"`
+	Password string `json:"password,omitempty"`
+	Token    string `json:"token,omitempty"`
+	AuthFile string `json:"auth_file,omitempty"`
+}
+
+type SecurityContext struct {
+	RunAsUser    *int64   `json:"run_as_user,omitempty"`
+	RunAsGroup   *int64   `json:"run_as_group,omitempty"`
+	RunAsNonRoot *bool    `json:"run_as_non_root,omitempty"`
+	Capabilities []string `json:"capabilities,omitempty"`
+}
+
+type ResourceLimits struct {
+	Memory string `json:"memory,omitempty"` // "1Gi"
+	CPU    string `json:"cpu,omitempty"`    // "1000m"
+	Disk   string `json:"disk,omitempty"`   // "10Gi"
 }
 
 type CacheInfo struct {
@@ -300,6 +340,26 @@ type CacheInfo struct {
 	Misses      int64 `json:"misses"`
 }
 
+type CacheMetrics struct {
+	TotalHits         int64                            `json:"total_hits"`
+	TotalMisses       int64                            `json:"total_misses"`
+	HitRate           float64                          `json:"hit_rate"`
+	TotalSize         int64                            `json:"total_size"`
+	TotalFiles        int                              `json:"total_files"`
+	PlatformStats     map[string]*PlatformCacheStats   `json:"platform_stats"`
+	InvalidationCount int64                            `json:"invalidation_count"`
+	PruningCount      int64                            `json:"pruning_count"`
+	SharedEntries     int                              `json:"shared_entries"`
+}
+
+type PlatformCacheStats struct {
+	Hits        int64     `json:"hits"`
+	Misses      int64     `json:"misses"`
+	TotalSize   int64     `json:"total_size"`
+	TotalFiles  int       `json:"total_files"`
+	LastUpdated time.Time `json:"last_updated"`
+}
+
 type PlatformResult struct {
 	Platform   Platform          `json:"platform"`
 	Success    bool              `json:"success"`
@@ -307,6 +367,7 @@ type PlatformResult struct {
 	ImageID    string            `json:"image_id,omitempty"`
 	ManifestID string            `json:"manifest_id,omitempty"`
 	Size       int64             `json:"size,omitempty"`
+	CacheHits  int               `json:"cache_hits,omitempty"`
 }
 
 type BuildResult struct {
@@ -328,6 +389,25 @@ type DockerfileInstruction struct {
 	Value   string            `json:"value"`
 	Args    map[string]string `json:"args,omitempty"`
 	Line    int               `json:"line"`
+	Stage   string            `json:"stage,omitempty"`   // Stage name for multi-stage builds
+}
+
+// BuildStage represents a single stage in a multi-stage Dockerfile
+type BuildStage struct {
+	Name         string                   `json:"name"`          // Stage name (from AS clause)
+	Index        int                      `json:"index"`         // Stage index (0-based)
+	BaseImage    string                   `json:"base_image"`    // FROM image
+	Instructions []*DockerfileInstruction `json:"instructions"`  // Instructions in this stage
+	Operations   []*Operation             `json:"operations"`    // Generated operations
+	Dependencies []string                 `json:"dependencies"`  // Other stages this stage depends on
+	IsFinal      bool                     `json:"is_final"`      // Whether this is the final stage
+}
+
+// MultiStageContext holds context for multi-stage builds
+type MultiStageContext struct {
+	Stages       []*BuildStage         `json:"stages"`        // All stages in order
+	StagesByName map[string]*BuildStage `json:"stages_by_name"` // Stages indexed by name
+	FinalStage   *BuildStage           `json:"final_stage"`   // The final stage to export
 }
 
 func NormalizeEnvironment(env map[string]string) map[string]string {

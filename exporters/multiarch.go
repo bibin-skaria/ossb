@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +12,8 @@ import (
 	"time"
 
 	"github.com/bibin-skaria/ossb/internal/types"
+	"github.com/bibin-skaria/ossb/layers"
+	"github.com/bibin-skaria/ossb/manifest"
 )
 
 type MultiArchExporter struct{}
@@ -43,17 +46,30 @@ type OCIPlatformDescriptor struct {
 }
 
 func (e *MultiArchExporter) Export(result *types.BuildResult, config *types.BuildConfig, workDir string) error {
+	// If not multi-arch or only one platform, delegate to ImageExporter
 	if !result.MultiArch || len(result.PlatformResults) <= 1 {
 		imageExporter := &ImageExporter{}
 		return imageExporter.Export(result, config, workDir)
 	}
 
+	// Create OCI image layout directory structure
 	imageDir := filepath.Join(workDir, "multiarch")
-	if err := os.MkdirAll(imageDir, 0755); err != nil {
-		return fmt.Errorf("failed to create multiarch directory: %v", err)
+	blobsDir := filepath.Join(imageDir, "blobs", "sha256")
+	if err := os.MkdirAll(blobsDir, 0755); err != nil {
+		return fmt.Errorf("failed to create OCI layout directories: %v", err)
 	}
 
-	var manifestRefs []OCIManifestRef
+	// Create OCI layout file
+	layoutData := map[string]interface{}{
+		"imageLayoutVersion": "1.0.0",
+	}
+	layoutBytes, _ := json.Marshal(layoutData)
+	if err := os.WriteFile(filepath.Join(imageDir, "oci-layout"), layoutBytes, 0644); err != nil {
+		return fmt.Errorf("failed to write OCI layout: %v", err)
+	}
+
+	generator := manifest.NewGenerator(manifest.DefaultGeneratorOptions())
+	var platformManifests []manifest.PlatformManifest
 	
 	for platformStr, platformResult := range result.PlatformResults {
 		if !platformResult.Success {
@@ -62,81 +78,78 @@ func (e *MultiArchExporter) Export(result *types.BuildResult, config *types.Buil
 
 		platform := types.ParsePlatform(platformStr)
 		
-		manifest, err := e.buildPlatformManifest(platform, platformResult, config, workDir)
+		// Build platform-specific manifest
+		platformManifest, err := e.buildPlatformManifest(platform, platformResult, config, workDir, blobsDir, generator)
 		if err != nil {
 			return fmt.Errorf("failed to build manifest for %s: %v", platformStr, err)
 		}
 
-		manifestData, err := json.Marshal(manifest)
-		if err != nil {
-			return fmt.Errorf("failed to marshal manifest for %s: %v", platformStr, err)
-		}
-
-		manifestDigest := fmt.Sprintf("sha256:%x", sha256.Sum256(manifestData))
-		manifestPath := filepath.Join(imageDir, "manifests", manifestDigest[7:]+".json")
-		
-		if err := os.MkdirAll(filepath.Dir(manifestPath), 0755); err != nil {
-			return fmt.Errorf("failed to create manifest directory: %v", err)
-		}
-		
-		if err := os.WriteFile(manifestPath, manifestData, 0644); err != nil {
-			return fmt.Errorf("failed to write manifest for %s: %v", platformStr, err)
-		}
-
-		manifestRef := OCIManifestRef{
-			MediaType: "application/vnd.oci.image.manifest.v1+json",
-			Digest:    manifestDigest,
-			Size:      int64(len(manifestData)),
-			Platform: OCIPlatformDescriptor{
-				Architecture: platform.Architecture,
-				OS:           platform.OS,
-				Variant:      platform.Variant,
-			},
-		}
-		
-		manifestRefs = append(manifestRefs, manifestRef)
+		platformManifests = append(platformManifests, *platformManifest)
 	}
 
-	if len(manifestRefs) == 0 {
+	if len(platformManifests) == 0 {
 		return fmt.Errorf("no successful platform builds to export")
 	}
 
-	index := &OCIIndex{
-		SchemaVersion: 2,
-		MediaType:     "application/vnd.oci.image.index.v1+json",
-		Manifests:     manifestRefs,
-		Annotations: map[string]string{
-			"org.opencontainers.image.created": time.Now().Format(time.RFC3339),
+	// Generate manifest list
+	manifestList, err := generator.GenerateManifestList(platformManifests)
+	if err != nil {
+		return fmt.Errorf("failed to generate manifest list: %v", err)
+	}
+
+	// Add annotations
+	if manifestList.Annotations == nil {
+		manifestList.Annotations = make(map[string]string)
+	}
+	manifestList.Annotations["org.opencontainers.image.created"] = time.Now().Format(time.RFC3339)
+	if len(config.Tags) > 0 {
+		manifestList.Annotations["org.opencontainers.image.ref.name"] = config.Tags[0]
+		manifestList.Annotations["org.opencontainers.image.title"] = config.Tags[0]
+	}
+
+	// Serialize and store manifest list
+	manifestListData, err := generator.SerializeManifestList(manifestList)
+	if err != nil {
+		return fmt.Errorf("failed to serialize manifest list: %v", err)
+	}
+
+	manifestListDigest := fmt.Sprintf("sha256:%x", sha256.Sum256(manifestListData))
+	manifestListPath := filepath.Join(blobsDir, manifestListDigest[7:])
+	if err := os.WriteFile(manifestListPath, manifestListData, 0644); err != nil {
+		return fmt.Errorf("failed to write manifest list blob: %v", err)
+	}
+
+	// Create index.json for OCI layout
+	indexData := map[string]interface{}{
+		"schemaVersion": 2,
+		"manifests": []map[string]interface{}{
+			{
+				"mediaType": "application/vnd.oci.image.index.v1+json",
+				"digest":    manifestListDigest,
+				"size":      len(manifestListData),
+				"annotations": map[string]string{
+					"org.opencontainers.image.ref.name": e.getImageReference(config),
+				},
+			},
 		},
 	}
-
-	if len(config.Tags) > 0 {
-		index.Annotations["org.opencontainers.image.ref.name"] = config.Tags[0]
-		index.Annotations["org.opencontainers.image.title"] = config.Tags[0]
+	indexBytes, _ := json.Marshal(indexData)
+	if err := os.WriteFile(filepath.Join(imageDir, "index.json"), indexBytes, 0644); err != nil {
+		return fmt.Errorf("failed to write index.json: %v", err)
 	}
 
-	indexData, err := json.Marshal(index)
-	if err != nil {
-		return fmt.Errorf("failed to marshal image index: %v", err)
-	}
-
-	indexPath := filepath.Join(imageDir, "index.json")
-	if err := os.WriteFile(indexPath, indexData, 0644); err != nil {
-		return fmt.Errorf("failed to write image index: %v", err)
-	}
-
-	indexDigest := fmt.Sprintf("sha256:%x", sha256.Sum256(indexData))
-	
+	// Update result
 	result.OutputPath = imageDir
-	result.ManifestListID = indexDigest
+	result.ManifestListID = manifestListDigest
 	if len(config.Tags) > 0 {
-		result.ImageID = config.Tags[0] + "@" + indexDigest
+		result.ImageID = config.Tags[0] + "@" + manifestListDigest
 	} else {
-		result.ImageID = indexDigest
+		result.ImageID = manifestListDigest
 	}
 
+	// Push if requested
 	if config.Push && config.Registry != "" {
-		if err := e.pushMultiArchImage(index, config, imageDir); err != nil {
+		if err := e.pushMultiArchImage(manifestList, config, imageDir); err != nil {
 			return fmt.Errorf("failed to push multi-arch image: %v", err)
 		}
 	}
@@ -144,121 +157,249 @@ func (e *MultiArchExporter) Export(result *types.BuildResult, config *types.Buil
 	return nil
 }
 
-func (e *MultiArchExporter) buildPlatformManifest(platform types.Platform, platformResult *types.PlatformResult, config *types.BuildConfig, workDir string) (*OCIManifest, error) {
+func (e *MultiArchExporter) buildPlatformManifest(platform types.Platform, platformResult *types.PlatformResult, config *types.BuildConfig, workDir, blobsDir string, generator *manifest.Generator) (*manifest.PlatformManifest, error) {
 	layersDir := filepath.Join(workDir, "layers", platform.String())
 	
-	layers, err := e.collectPlatformLayers(layersDir, platform)
+	// Collect and process layers for this platform
+	layerObjects, err := e.collectPlatformLayers(layersDir, platform, blobsDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to collect layers for %s: %v", platform.String(), err)
 	}
 
-	imageConfig := &OCIImageConfig{
-		Created:      time.Now(),
-		Architecture: platform.Architecture,
-		OS:           platform.OS,
-		Config:       e.buildContainerConfig(config, platform),
-		RootFS: OCIRootFS{
-			Type:    "layers",
-			DiffIDs: layers,
-		},
-		History: e.buildPlatformHistory(platform),
-	}
-
-	if platform.Variant != "" {
-		imageConfig.Variant = platform.Variant
-	}
-
-	configData, err := json.Marshal(imageConfig)
+	// Create Dockerfile instructions from platform result metadata
+	instructions := e.createPlatformInstructions(platformResult, platform)
+	
+	// Generate image configuration
+	imageConfig, err := generator.GenerateImageConfig(instructions, platform)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal image config: %v", err)
+		return nil, fmt.Errorf("failed to generate image config for %s: %v", platform.String(), err)
 	}
 
-	configDigest := fmt.Sprintf("sha256:%x", sha256.Sum256(configData))
-	configPath := filepath.Join(workDir, "multiarch", "blobs", configDigest[7:]+".json")
-	
-	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
-		return nil, fmt.Errorf("failed to create config directory: %v", err)
-	}
-	
-	if err := os.WriteFile(configPath, configData, 0644); err != nil {
-		return nil, fmt.Errorf("failed to write config: %v", err)
-	}
-
-	layerDescriptors := make([]OCIDescriptor, len(layers))
-	for i, layer := range layers {
-		layerDescriptors[i] = OCIDescriptor{
-			MediaType: "application/vnd.oci.image.layer.v1.tar",
-			Digest:    layer,
-			Size:      0, 
+	// Add layers to config
+	for _, layer := range layerObjects {
+		if err := generator.AddLayerToConfig(imageConfig, layer); err != nil {
+			return nil, fmt.Errorf("failed to add layer to config for %s: %v", platform.String(), err)
 		}
 	}
 
-	manifest := &OCIManifest{
-		SchemaVersion: 2,
-		MediaType:     "application/vnd.oci.image.manifest.v1+json",
-		Config: OCIDescriptor{
-			MediaType: "application/vnd.oci.image.config.v1+json",
-			Digest:    configDigest,
-			Size:      int64(len(configData)),
-		},
-		Layers: layerDescriptors,
-		Annotations: map[string]string{
-			"org.opencontainers.image.created": time.Now().Format(time.RFC3339),
-			"org.opencontainers.image.platform": platform.String(),
+	// Serialize and store config
+	configData, err := generator.SerializeConfig(imageConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to serialize config for %s: %v", platform.String(), err)
+	}
+
+	configDigest := fmt.Sprintf("sha256:%x", sha256.Sum256(configData))
+	configPath := filepath.Join(blobsDir, configDigest[7:])
+	if err := os.WriteFile(configPath, configData, 0644); err != nil {
+		return nil, fmt.Errorf("failed to write config blob for %s: %v", platform.String(), err)
+	}
+
+	// Generate image manifest
+	imageManifest, err := generator.GenerateImageManifest(imageConfig, layerObjects)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate manifest for %s: %v", platform.String(), err)
+	}
+
+	// Add platform-specific annotations
+	if imageManifest.Annotations == nil {
+		imageManifest.Annotations = make(map[string]string)
+	}
+	imageManifest.Annotations["org.opencontainers.image.created"] = time.Now().Format(time.RFC3339)
+	imageManifest.Annotations["org.opencontainers.image.platform"] = platform.String()
+
+	// Serialize and store manifest
+	manifestData, err := generator.SerializeManifest(imageManifest)
+	if err != nil {
+		return nil, fmt.Errorf("failed to serialize manifest for %s: %v", platform.String(), err)
+	}
+
+	manifestDigest := fmt.Sprintf("sha256:%x", sha256.Sum256(manifestData))
+	manifestPath := filepath.Join(blobsDir, manifestDigest[7:])
+	if err := os.WriteFile(manifestPath, manifestData, 0644); err != nil {
+		return nil, fmt.Errorf("failed to write manifest blob for %s: %v", platform.String(), err)
+	}
+
+	// Create platform manifest
+	platformManifest := &manifest.PlatformManifest{
+		MediaType: "application/vnd.oci.image.manifest.v1+json",
+		Size:      int64(len(manifestData)),
+		Digest:    manifestDigest,
+		Platform: manifest.Platform{
+			Architecture: platform.Architecture,
+			OS:           platform.OS,
+			Variant:      platform.Variant,
 		},
 	}
 
-	return manifest, nil
+	return platformManifest, nil
 }
 
-func (e *MultiArchExporter) collectPlatformLayers(layersDir string, platform types.Platform) ([]string, error) {
-	var layers []string
+func (e *MultiArchExporter) collectPlatformLayers(layersDir string, platform types.Platform, blobsDir string) ([]*layers.Layer, error) {
+	var layerObjects []*layers.Layer
 	
 	entries, err := os.ReadDir(layersDir)
 	if os.IsNotExist(err) {
-		return layers, nil
+		return layerObjects, nil
 	}
 	if err != nil {
 		return nil, err
 	}
 
+	layerManager := layers.NewLayerManager(layers.LayerConfig{
+		Compression: layers.CompressionGzip,
+		SkipEmpty:   true,
+	})
+
 	for _, entry := range entries {
 		if entry.IsDir() {
-			layerHash := fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(entry.Name()+platform.String())))
-			layers = append(layers, layerHash)
+			layerPath := filepath.Join(layersDir, entry.Name())
+			
+			// Detect changes in the layer directory
+			changes, err := e.detectPlatformLayerChanges(layerPath, platform)
+			if err != nil {
+				return nil, fmt.Errorf("failed to detect changes in layer %s for %s: %v", entry.Name(), platform.String(), err)
+			}
+
+			if len(changes) == 0 {
+				continue // Skip empty layers
+			}
+
+			// Create layer from changes
+			layer, err := layerManager.CreateLayer(changes)
+			if err != nil {
+				return nil, fmt.Errorf("failed to create layer %s for %s: %v", entry.Name(), platform.String(), err)
+			}
+
+			// Add platform-specific metadata
+			if layer.Annotations == nil {
+				layer.Annotations = make(map[string]string)
+			}
+			layer.Annotations["ossb.platform"] = platform.String()
+			layer.CreatedBy = fmt.Sprintf("OSSB multiarch build for %s", platform.String())
+
+			// Copy layer blob to blobs directory
+			if layer.Blob != nil {
+				blobPath := filepath.Join(blobsDir, layer.Digest[7:])
+				if err := e.copyBlobToFile(layer.Blob, blobPath); err != nil {
+					return nil, fmt.Errorf("failed to copy layer blob for %s: %v", platform.String(), err)
+				}
+				layer.Blob.Close()
+			}
+
+			layerObjects = append(layerObjects, layer)
 		}
 	}
 
-	return layers, nil
+	return layerObjects, nil
 }
 
-func (e *MultiArchExporter) buildContainerConfig(config *types.BuildConfig, platform types.Platform) OCIContainerConfig {
-	containerConfig := OCIContainerConfig{
-		Labels: make(map[string]string),
-	}
-
-	containerConfig.Labels["org.opencontainers.image.platform"] = platform.String()
-	containerConfig.Labels["org.opencontainers.image.architecture"] = platform.Architecture
-	containerConfig.Labels["org.opencontainers.image.os"] = platform.OS
+func (e *MultiArchExporter) detectPlatformLayerChanges(layerPath string, platform types.Platform) ([]layers.FileChange, error) {
+	var changes []layers.FileChange
 	
+	err := filepath.Walk(layerPath, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		relPath, err := filepath.Rel(layerPath, path)
+		if err != nil {
+			return err
+		}
+
+		if relPath == "." {
+			return nil
+		}
+
+		// Normalize path for OCI compliance
+		relPath = filepath.ToSlash(relPath)
+		if !strings.HasPrefix(relPath, "/") {
+			relPath = "/" + relPath
+		}
+
+		change := layers.FileChange{
+			Path:      relPath,
+			Type:      layers.ChangeTypeAdd,
+			Mode:      info.Mode(),
+			Size:      info.Size(),
+			Timestamp: info.ModTime(),
+		}
+
+		if info.IsDir() {
+			change.Size = 0
+		} else if info.Mode().IsRegular() {
+			file, err := os.Open(path)
+			if err != nil {
+				return err
+			}
+			change.Content = file
+		}
+
+		changes = append(changes, change)
+		return nil
+	})
+
+	return changes, err
+}
+
+func (e *MultiArchExporter) copyBlobToFile(blob io.ReadCloser, destPath string) error {
+	destFile, err := os.Create(destPath)
+	if err != nil {
+		return err
+	}
+	defer destFile.Close()
+
+	_, err = io.Copy(destFile, blob)
+	return err
+}
+
+func (e *MultiArchExporter) createPlatformInstructions(platformResult *types.PlatformResult, platform types.Platform) []types.DockerfileInstruction {
+	var instructions []types.DockerfileInstruction
+	
+	// Create basic FROM instruction
+	instructions = append(instructions, types.DockerfileInstruction{
+		Command: "FROM",
+		Value:   "scratch",
+		Line:    1,
+	})
+
+	// Add platform-specific metadata as labels
+	instructions = append(instructions, types.DockerfileInstruction{
+		Command: "LABEL",
+		Value:   fmt.Sprintf("org.opencontainers.image.platform=%s", platform.String()),
+		Line:    len(instructions) + 1,
+	})
+
+	instructions = append(instructions, types.DockerfileInstruction{
+		Command: "LABEL",
+		Value:   fmt.Sprintf("org.opencontainers.image.architecture=%s", platform.Architecture),
+		Line:    len(instructions) + 1,
+	})
+
+	instructions = append(instructions, types.DockerfileInstruction{
+		Command: "LABEL",
+		Value:   fmt.Sprintf("org.opencontainers.image.os=%s", platform.OS),
+		Line:    len(instructions) + 1,
+	})
+
 	if platform.Variant != "" {
-		containerConfig.Labels["org.opencontainers.image.variant"] = platform.Variant
+		instructions = append(instructions, types.DockerfileInstruction{
+			Command: "LABEL",
+			Value:   fmt.Sprintf("org.opencontainers.image.variant=%s", platform.Variant),
+			Line:    len(instructions) + 1,
+		})
 	}
 
-	return containerConfig
+	return instructions
 }
 
-func (e *MultiArchExporter) buildPlatformHistory(platform types.Platform) []OCIHistory {
-	return []OCIHistory{
-		{
-			Created:   time.Now(),
-			CreatedBy: fmt.Sprintf("ossb multiarch build for %s", platform.String()),
-			Comment:   fmt.Sprintf("Multi-architecture build layer for %s", platform.String()),
-		},
+func (e *MultiArchExporter) getImageReference(config *types.BuildConfig) string {
+	if len(config.Tags) > 0 {
+		return config.Tags[0]
 	}
+	return "latest"
 }
 
-func (e *MultiArchExporter) pushMultiArchImage(index *OCIIndex, config *types.BuildConfig, imageDir string) error {
+func (e *MultiArchExporter) pushMultiArchImage(manifestList *manifest.ManifestList, config *types.BuildConfig, imageDir string) error {
 	if len(config.Tags) == 0 {
 		return fmt.Errorf("no tags specified for push")
 	}

@@ -1,0 +1,191 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ossb-build-example
+  namespace: default
+  labels:
+    app: ossb
+    build-id: "example-build-123"
+spec:
+  template:
+    metadata:
+      labels:
+        app: ossb
+        build-id: "example-build-123"
+    spec:
+      restartPolicy: Never
+      serviceAccountName: ossb-builder
+      containers:
+      - name: ossb
+        image: ossb:latest
+        command: ["ossb"]
+        args:
+        - "build"
+        - "--push"
+        - "--registry=docker.io"
+        - "--tag=myapp:latest"
+        - "--tag=myapp:v1.0"
+        - "--platform=linux/amd64,linux/arm64"
+        - "/workspace/context"
+        env:
+        - name: JOB_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.labels['job-name']
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: LOG_LEVEL
+          value: "info"
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+            ephemeral-storage: "10Gi"
+          limits:
+            memory: "4Gi"
+            cpu: "2"
+            ephemeral-storage: "20Gi"
+        volumeMounts:
+        - name: build-context
+          mountPath: /workspace/context
+          readOnly: true
+        - name: registry-secret
+          mountPath: /var/run/secrets/registry-secret
+          readOnly: true
+        - name: build-secrets
+          mountPath: /var/run/secrets/build-secrets
+          readOnly: true
+        - name: registry-config
+          mountPath: /var/run/configmaps/registry-config
+          readOnly: true
+        - name: workspace
+          mountPath: /workspace
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          runAsGroup: 1000
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          seccompProfile:
+            type: RuntimeDefault
+      volumes:
+      - name: build-context
+        configMap:
+          name: build-context
+      - name: registry-secret
+        secret:
+          secretName: registry-credentials
+      - name: build-secrets
+        secret:
+          secretName: build-secrets
+          optional: true
+      - name: registry-config
+        configMap:
+          name: registry-config
+          optional: true
+      - name: workspace
+        emptyDir:
+          sizeLimit: "20Gi"
+  backoffLimit: 3
+  activeDeadlineSeconds: 3600  # 1 hour timeout
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ossb-builder
+  namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ossb-builder
+  namespace: default
+rules:
+- apiGroups: [""]
+  resources: ["secrets", "configmaps"]
+  verbs: ["get", "list"]
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ossb-builder
+  namespace: default
+subjects:
+- kind: ServiceAccount
+  name: ossb-builder
+  namespace: default
+roleRef:
+  kind: Role
+  name: ossb-builder
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: registry-credentials
+  namespace: default
+type: kubernetes.io/dockerconfigjson
+data:
+  .dockerconfigjson: eyJhdXRocyI6eyJkb2NrZXIuaW8iOnsidXNlcm5hbWUiOiJ0ZXN0dXNlciIsInBhc3N3b3JkIjoidGVzdHBhc3MifX19
+  # Base64 encoded: {"auths":{"docker.io":{"username":"testuser","password":"testpass"}}}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: build-secrets
+  namespace: default
+type: Opaque
+data:
+  api-key: dGVzdC1hcGkta2V5  # Base64 encoded: test-api-key
+  db-password: dGVzdC1kYi1wYXNz  # Base64 encoded: test-db-pass
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: registry-config
+  namespace: default
+data:
+  config.yaml: |
+    default_registry: docker.io
+    registries:
+      gcr.io:
+        username: _json_key
+        auth_file: /var/run/secrets/gcr-key/key.json
+    insecure:
+      - localhost:5000
+    mirrors:
+      docker.io:
+        - mirror.gcr.io
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: build-context
+  namespace: default
+data:
+  Dockerfile: |
+    FROM alpine:latest
+    RUN apk add --no-cache curl
+    COPY app.sh /app.sh
+    RUN chmod +x /app.sh
+    EXPOSE 8080
+    CMD ["/app.sh"]
+  app.sh: |
+    #!/bin/sh
+    echo "Hello from OSSB!"
+    exec "$@"
